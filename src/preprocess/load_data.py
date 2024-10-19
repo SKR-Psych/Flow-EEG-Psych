@@ -103,9 +103,9 @@ def main():
             if df_signal is not None:
                 save_data(df_signal, metadata)
                 print(f"Saved data for subject {metadata['subject']} under condition {metadata['condition']}")
-            break
 
 if __name__ == "__main__":
     main()
+
 
 
