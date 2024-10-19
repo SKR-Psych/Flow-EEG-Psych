@@ -1,1 +1,5 @@
+# Ignore raw data files
 data/raw/*.mat
+
+# Ignore processed data files
+data/processed/*.csv
