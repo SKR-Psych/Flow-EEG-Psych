@@ -1,5 +1,5 @@
-# Ignore raw data files
-data/raw/*.mat
+# Ignore all CSV files in the repository
+*.csv
 
-# Ignore processed data files
-data/processed/*.csv
+# Ignore all MAT files in the repository
+*.mat
