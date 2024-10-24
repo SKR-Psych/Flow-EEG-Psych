@@ -5,7 +5,7 @@ from scipy.signal import welch
 import json
 
 # Directory containing processed EEG CSV files
-processed_data_dir = "data/processed/"
+processed_data_dir = r'C:\Users\Sami\Desktop\Uni\Flow-EEG-Psych\data\processed'
 
 # Define frequency bands for EEG analysis
 bands = {
@@ -52,7 +52,7 @@ def extract_features(file_path):
     return features
 
 # Directory to save extracted features
-output_dir = "data/features/"
+output_dir = r'C:\Users\Sami\Desktop\Uni\Flow-EEG-Psych\data\features'
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
@@ -84,4 +84,3 @@ metadata_json_path = os.path.join(output_dir, 'features_metadata.json')
 with open(metadata_json_path, 'w') as f:
     json.dump(metadata, f, indent=4)
 print(f"Metadata saved to {metadata_json_path}")
-
