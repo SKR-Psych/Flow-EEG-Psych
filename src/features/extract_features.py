@@ -16,18 +16,19 @@ bands = {
     'gamma': (30, 45)
 }
 
-# Sampling rate (should be extracted from metadata if available, this is an example value)
-fs = 256  # Sampling rate in Hz
+# Default sampling rate (used if not available in metadata)
+default_fs = 256  # Sampling rate in Hz
 
 # Function to compute band power for a specific frequency band
 def compute_band_power(signal, fs, band):
     fmin, fmax = band
-    f, Pxx = welch(signal, fs, nperseg=1024)
+    nperseg = min(1024, len(signal))  # Adjust nperseg based on signal length
+    f, Pxx = welch(signal, fs, nperseg=nperseg)
     band_power = np.trapz(Pxx[(f >= fmin) & (f <= fmax)], f[(f >= fmin) & (f <= fmax)])
     return band_power
 
 # Function to extract features from a CSV file containing EEG data
-def extract_features(file_path):
+def extract_features(file_path, fs):
     # Load the EEG data from CSV
     df_signal = pd.read_csv(file_path)
     
@@ -45,7 +46,12 @@ def extract_features(file_path):
     
     for band_name, band_range in bands.items():
         for column in df_signal.columns:
-            band_power = compute_band_power(df_signal[column].values, fs, band_range)
+            signal = df_signal[column].values
+            if len(signal) < 2:
+                print(f"Warning: Signal in {column} is too short to analyze.")
+                band_power = np.nan
+            else:
+                band_power = compute_band_power(signal, fs, band_range)
             feature_name = f"{column}_{band_name}_power"
             features[feature_name] = band_power
     
@@ -62,7 +68,22 @@ for file in os.listdir(processed_data_dir):
     if file.endswith('_signals.csv'):
         file_path = os.path.join(processed_data_dir, file)
         try:
-            features = extract_features(file_path)
+            # Attempt to read sampling rate from metadata if available
+            metadata_path = file_path.replace('_signals.csv', '_metadata.csv')
+            if os.path.exists(metadata_path):
+                metadata = pd.read_csv(metadata_path)
+                if 'sampling_rate' in metadata.columns:
+                    fs_value = metadata['sampling_rate'].values[0]
+                    if isinstance(fs_value, str) and fs_value.startswith('[['):
+                        fs = float(fs_value.strip('[]'))
+                    else:
+                        fs = float(fs_value)
+                else:
+                    fs = default_fs
+            else:
+                fs = default_fs
+
+            features = extract_features(file_path, fs)
             all_features.append(features)
             print(f"Extracted features from {file}")
         except Exception as e:
@@ -77,7 +98,7 @@ print(f"All features saved to {features_csv_path}")
 # Save metadata to a JSON file for reference
 metadata = {
     'bands': bands,
-    'sampling_rate': fs,
+    'sampling_rate': default_fs,
     'description': "EEG frequency band power features extracted from raw signals"
 }
 metadata_json_path = os.path.join(output_dir, 'features_metadata.json')
