@@ -2,7 +2,6 @@ import os
 import h5py
 import pandas as pd
 
-# Define path to raw data folder
 raw_data_path = 'data/raw/'
 
 def load_mat_file(filename):
@@ -17,7 +16,7 @@ def load_mat_file(filename):
         # Print keys to understand the structure of the file
         print("Keys in the file:", list(mat_data.keys()))
         
-        # Explore 'actualVariable' content
+        # Explore 'actualVariable' content if it exists
         if 'actualVariable' in mat_data:
             actual_variable = mat_data['actualVariable']
             
@@ -34,46 +33,45 @@ def load_mat_file(filename):
                         print("'EEG_full' is a group. Keys in the group:", list(eeg_full.keys()))
 
                         # Extract relevant data from 'EEG_full'
-                        eeg_data = eeg_full['data'][:]
-                        sampling_rate = eeg_full['srate'][()]
+                        if 'data' in eeg_full and 'srate' in eeg_full:
+                            eeg_data = eeg_full['data'][:]
+                            sampling_rate = eeg_full['srate'][()]
 
-                        # Print extracted information for verification
-                        print(f"EEG data shape: {eeg_data.shape}")
-                        print(f"Sampling Rate: {sampling_rate}")
-                        print(f"Subject (from filename): {subject}")
-                        print(f"Condition (from filename): {condition}")
+                            # Print extracted information for verification
+                            print(f"EEG data shape: {eeg_data.shape}")
+                            print(f"Sampling Rate: {sampling_rate}")
+                            print(f"Subject (from filename): {subject}")
+                            print(f"Condition (from filename): {condition}")
 
-                        # Convert EEG data to DataFrame for easier manipulation
-                        num_channels = eeg_data.shape[0]
-                        num_samples = eeg_data.shape[1]
-                        
-                        # Extract channel names (assuming it's a dataset of strings)
-                        chanlocs = []
-                        if 'chanlocs' in eeg_full:
-                            chanlocs_data = eeg_full['chanlocs']
-                            for i in range(num_channels):
-                                try:
-                                    chanloc = chanlocs_data[i][()].tobytes().decode('utf-8').strip()
-                                    chanlocs.append(chanloc)
-                                except:
-                                    chanlocs.append(f"Channel_{i+1}")
-                        else:
-                            chanlocs = [f"Channel_{i+1}" for i in range(num_channels)]
+                            # Convert EEG data to DataFrame for easier manipulation
+                            num_channels = eeg_data.shape[0]
+                            chanlocs = []
 
-                        df_signal = pd.DataFrame(eeg_data.T, columns=chanlocs)
+                            if 'chanlocs' in eeg_full:
+                                chanlocs_data = eeg_full['chanlocs']
+                                for i in range(num_channels):
+                                    try:
+                                        chanloc = chanlocs_data[i][()].tobytes().decode('utf-8').strip()
+                                        chanlocs.append(chanloc)
+                                    except:
+                                        chanlocs.append(f"Channel_{i+1}")
+                            else:
+                                chanlocs = [f"Channel_{i+1}" for i in range(num_channels)]
 
-                        # Print first few rows of the signal DataFrame
-                        print(df_signal.head())
+                            df_signal = pd.DataFrame(eeg_data.T, columns=chanlocs)
 
-                        # Metadata dictionary with values extracted from filename
-                        metadata = {
-                            'subject': subject,
-                            'condition': condition,
-                            'sampling_rate': sampling_rate
-                        }
+                            # Print first few rows of the signal DataFrame
+                            print(df_signal.head())
 
-                        # Return the signal data and metadata
-                        return df_signal, metadata
+                            # Metadata dictionary with values extracted from filename
+                            metadata = {
+                                'subject': subject,
+                                'condition': condition,
+                                'sampling_rate': sampling_rate
+                            }
+
+                            # Return the signal data and metadata
+                            return df_signal, metadata
     return None, None
 
 # Save Data Function
@@ -106,6 +104,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
