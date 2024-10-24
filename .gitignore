@@ -3,3 +3,5 @@
 
 # Ignore all MAT files in the repository
 *.mat
+
+*.sami
