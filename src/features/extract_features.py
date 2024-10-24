@@ -1,115 +1,87 @@
-# Full Feature Extraction Code
-
 import os
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from scipy.stats import entropy
+import numpy as np
+from scipy.signal import welch
+import json
 
-# Paths to STFT data and features output
-data_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'stft')
-features_output_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'features')
+# Directory containing processed EEG CSV files
+processed_data_dir = "data/processed/"
 
-# Ensure the features directory exists
-if not os.path.exists(features_output_path):
-    os.makedirs(features_output_path)
-
-# Frequency band definitions (in Hz)
-frequency_bands = {
-    'delta': (1, 4),
+# Define frequency bands for EEG analysis
+bands = {
+    'delta': (0.5, 4),
     'theta': (4, 8),
     'alpha': (8, 13),
     'beta': (13, 30),
-    'gamma': (30, 50)
+    'gamma': (30, 45)
 }
 
-# Function to calculate band power
-def calculate_band_power(stft_matrix, freqs, band):
-    """
-    Calculate the average power in the given frequency band.
-    """
-    band_freqs = np.where((freqs >= band[0]) & (freqs <= band[1]))[0]
-    if band_freqs.size == 0:
-        print(f"Warning: No frequencies found in band {band}. Skipping band power calculation.")
-        return 0.0
-    band_power = np.mean(np.abs(stft_matrix[band_freqs, :] ** 2), axis=0)
-    return np.mean(band_power)
+# Sampling rate (should be extracted from metadata if available, this is an example value)
+fs = 256  # Sampling rate in Hz
 
-# Function to calculate spectral entropy
-def calculate_spectral_entropy(stft_matrix):
-    """
-    Calculate the spectral entropy of the given STFT data.
-    """
-    power_spectrum = np.abs(stft_matrix) ** 2
-    total_power = np.sum(power_spectrum, axis=0)
-    if np.any(total_power == 0):
-        print("Warning: Some columns have total power of zero, skipping spectral entropy calculation for those columns.")
-        power_spectrum[:, total_power == 0] = 1.0  # Avoid division by zero
-    power_spectrum /= total_power  # Normalize
-    return entropy(power_spectrum, base=2, axis=0).mean()
+# Function to compute band power for a specific frequency band
+def compute_band_power(signal, fs, band):
+    fmin, fmax = band
+    f, Pxx = welch(signal, fs, nperseg=1024)
+    band_power = np.trapz(Pxx[(f >= fmin) & (f <= fmax)], f[(f >= fmin) & (f <= fmax)])
+    return band_power
 
-# Function to extract features from an STFT CSV file
-def extract_features_from_file(file_path):
-    df = pd.read_csv(file_path)
+# Function to extract features from a CSV file containing EEG data
+def extract_features(file_path):
+    # Load the EEG data from CSV
+    df_signal = pd.read_csv(file_path)
     
-    # Extract frequency values from the 'Frequency (Hz)' column
-    frequencies = df['Frequency (Hz)'].values
+    # Extract subject and condition from the filename
+    filename = os.path.basename(file_path)
+    file_parts = filename.split('_')
+    subject = file_parts[0]  # e.g., "S01"
+    condition = '_'.join(file_parts[1:]).replace('_signals.csv', '')
     
-    # Exclude 'Frequency (Hz)' and 'Time (s)' columns to get only the STFT data
-    stft_df = df.drop(columns=['Frequency (Hz)', 'Time (s)'])
+    # Extract frequency domain features for each channel
+    features = {
+        'subject': subject,
+        'condition': condition
+    }
     
-    # Convert the remaining data (STFT magnitudes) to a NumPy array
-    stft_matrix = stft_df.to_numpy()
-    
-    # Calculate features for each frequency band
-    features = {}
-    for band_name, band_range in frequency_bands.items():
-        features[f'{band_name}_power'] = calculate_band_power(stft_matrix, frequencies, band_range)
-    
-    # Calculate spectral entropy
-    features['spectral_entropy'] = calculate_spectral_entropy(stft_matrix)
+    for band_name, band_range in bands.items():
+        for column in df_signal.columns:
+            band_power = compute_band_power(df_signal[column].values, fs, band_range)
+            feature_name = f"{column}_{band_name}_power"
+            features[feature_name] = band_power
     
     return features
 
-# Main function to extract features from all STFT files
-def main():
-    feature_list = []
-    try:
-        # List all files in the data path to ensure there are files to process
-        files = os.listdir(data_path)
-        if not files:
-            print("No files found in the data path. Please check the path and try again.")
-            return
+# Directory to save extracted features
+output_dir = "data/features/"
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
 
-        # Extract features from each file
-        for file in files:
-            if file.endswith('_stft.csv'):
-                file_path = os.path.join(data_path, file)
-                print(f"Processing file: {file}")
-                features = extract_features_from_file(file_path)
-                # Extract subject and condition from filename
-                filename_parts = file.split('_')
-                subject = filename_parts[0]
-                condition = '_'.join(filename_parts[1:-1])
-                # Add subject and condition to features
-                features['subject'] = subject
-                features['condition'] = condition
-                feature_list.append(features)
-    except FileNotFoundError:
-        print(f"The directory {data_path} does not exist. Please check the path.")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+# Iterate over all processed EEG CSV files and extract features
+all_features = []
+for file in os.listdir(processed_data_dir):
+    if file.endswith('_signals.csv'):
+        file_path = os.path.join(processed_data_dir, file)
+        try:
+            features = extract_features(file_path)
+            all_features.append(features)
+            print(f"Extracted features from {file}")
+        except Exception as e:
+            print(f"Error extracting features from {file}: {e}")
 
-    # Save the extracted features if available
-    if feature_list:
-        features_df = pd.DataFrame(feature_list)
-        features_output_file = os.path.join(features_output_path, 'features.csv')
-        features_df.to_csv(features_output_file, index=False)
-        print(f"Feature extraction complete. Features saved to: {features_output_file}")
-    else:
-        print("No features extracted. Please check the input files and try again.")
+# Save all extracted features to a CSV file
+features_df = pd.DataFrame(all_features)
+features_csv_path = os.path.join(output_dir, 'eeg_features.csv')
+features_df.to_csv(features_csv_path, index=False)
+print(f"All features saved to {features_csv_path}")
 
-if __name__ == "__main__":
-    main()
-
+# Save metadata to a JSON file for reference
+metadata = {
+    'bands': bands,
+    'sampling_rate': fs,
+    'description': "EEG frequency band power features extracted from raw signals"
+}
+metadata_json_path = os.path.join(output_dir, 'features_metadata.json')
+with open(metadata_json_path, 'w') as f:
+    json.dump(metadata, f, indent=4)
+print(f"Metadata saved to {metadata_json_path}")
 
