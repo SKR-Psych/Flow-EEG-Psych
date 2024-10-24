@@ -23,9 +23,6 @@ frequency_bands = {
     'gamma': (30, 50)
 }
 
-# Sampling rate assumption for STFT analysis (modify if different)
-sampling_rate = 256
-
 # Function to calculate band power
 def calculate_band_power(stft_matrix, freqs, band):
     """
@@ -54,22 +51,24 @@ def calculate_spectral_entropy(stft_matrix):
 # Function to extract features from an STFT CSV file
 def extract_features_from_file(file_path):
     df = pd.read_csv(file_path)
-    # Extract signal values as NumPy array
-    stft_data = df.to_numpy()
-
-    # Assuming the first column contains frequency information
-    frequencies = stft_data[:, 0]
-    # The rest are STFT values
-    stft_matrix = stft_data[:, 1:]
-
+    
+    # Extract frequency values from the 'Frequency (Hz)' column
+    frequencies = df['Frequency (Hz)'].values
+    
+    # Exclude 'Frequency (Hz)' and 'Time (s)' columns to get only the STFT data
+    stft_df = df.drop(columns=['Frequency (Hz)', 'Time (s)'])
+    
+    # Convert the remaining data (STFT magnitudes) to a NumPy array
+    stft_matrix = stft_df.to_numpy()
+    
     # Calculate features for each frequency band
     features = {}
     for band_name, band_range in frequency_bands.items():
         features[f'{band_name}_power'] = calculate_band_power(stft_matrix, frequencies, band_range)
-
+    
     # Calculate spectral entropy
     features['spectral_entropy'] = calculate_spectral_entropy(stft_matrix)
-
+    
     return features
 
 # Main function to extract features from all STFT files
