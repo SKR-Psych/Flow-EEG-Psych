@@ -17,11 +17,14 @@ for file in os.listdir(raw_data_dir):
                     actual_variable = f['actualVariable']
                     if isinstance(actual_variable, h5py.Group):
                         print(f"Contents of 'actualVariable' in {file}: {list(actual_variable.keys())}")
+
+                        # Check if 'EEG_full' is inside 'actualVariable'
+                        if 'EEG_full' in actual_variable:
+                            eeg_full = actual_variable['EEG_full']
+                            print(f"'EEG_full' shape in {file}: {eeg_full.shape}")
+                        else:
+                            print(f"'EEG_full' not found in 'actualVariable' in {file}")
                     else:
                         print(f"'actualVariable' in {file} is not a group.")
-                
-                # If 'EEG_full' is not found, report it
-                if 'EEG_full' not in keys:
-                    print(f"Warning: {file} does not contain 'EEG_full'.")
         except Exception as e:
             print(f"Error opening {file}: {e}")
