@@ -1,11 +1,11 @@
-import scipy.io
+import h5py
 import os
 
 def load_mat_file(file_path):
     """
-    Loads a .mat file and returns the content.
+    Loads a MATLAB v7.3 .mat file using h5py and returns the content.
     """
-    mat = scipy.io.loadmat(file_path, struct_as_record=False, squeeze_me=True)
+    mat = h5py.File(file_path, 'r')
     return mat
 
 def get_mat_file_list(raw_data_dir):
@@ -14,4 +14,5 @@ def get_mat_file_list(raw_data_dir):
     """
     mat_files = [f for f in os.listdir(raw_data_dir) if f.endswith('.mat')]
     return mat_files
+
 

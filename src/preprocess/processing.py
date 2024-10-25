@@ -4,45 +4,31 @@ import pandas as pd
 from load_data import load_mat_file, get_mat_file_list
 
 def convert_mat_to_csv():
-    # Define paths relative to this script's location
+    # Paths
     current_dir = os.path.dirname(os.path.abspath(__file__))
     raw_data_dir = os.path.join(current_dir, '../../data/raw/')
     processed_data_dir = os.path.join(current_dir, '../../data/processed/')
 
-    # Ensure the processed data directory exists
     os.makedirs(processed_data_dir, exist_ok=True)
-
-    # Get list of .mat files
     mat_files = get_mat_file_list(raw_data_dir)
 
     for mat_file in mat_files:
         print(f'Processing {mat_file}...')
 
-        # Load the .mat file
-        mat = load_mat_file(os.path.join(raw_data_dir, mat_file))
-
-        # Extract the EEG data structure
         try:
-            BF_Data = mat['BF_Data']
-            EEG_full = BF_Data.actualVariable.EEG_full
+            mat = load_mat_file(os.path.join(raw_data_dir, mat_file))
+
+            # Navigate the HDF5 structure
+            EEG_full = mat['BF_Data']['actualVariable']['EEG_full']
 
             # Extract data
-            data = EEG_full.data  # Shape: (channels x timepoints)
-            data = data.astype(np.float64)  # Ensure data is in float64 format
-
-            # Extract event markers
-            events = EEG_full.event  # List of events
-
-            # Extract channel information
-            chanlocs = EEG_full.chanlocs  # List of channel info
-
-            # Create a DataFrame for the signals
-            data = data.T  # Transpose to get timepoints x channels
+            data = np.array(EEG_full['data']).T  # Transpose to get timepoints x channels
 
             # Extract channel labels
+            chanlocs = EEG_full['chanlocs']
             channel_labels = []
-            for chan in np.ravel(chanlocs):
-                label = chan.labels
+            for i in range(len(chanlocs)):
+                label = ''.join(chr(c[0]) for c in mat[chanlocs[i]]['labels'])
                 channel_labels.append(label)
             signal_df = pd.DataFrame(data, columns=channel_labels)
 
@@ -53,15 +39,18 @@ def convert_mat_to_csv():
             print(f'Saved signals to {signal_csv_path}')
 
             # Process events
+            events = EEG_full['event']
             event_list = []
-            for event in np.ravel(events):
+            for i in range(len(events)):
+                event = events[i]
                 event_dict = {}
-                for field_name in event._fieldnames:
-                    value = getattr(event, field_name)
-                    event_dict[field_name] = value
+                for key in mat[events[i]].keys():
+                    value = mat[events[i]][key][()]
+                    if isinstance(value, np.ndarray) and value.size == 1:
+                        value = value.item()
+                    event_dict[key] = value
                 event_list.append(event_dict)
 
-            # Create a DataFrame for the metadata/events
             metadata_df = pd.DataFrame(event_list)
 
             # Save metadata to CSV
@@ -78,5 +67,6 @@ def convert_mat_to_csv():
 
 if __name__ == '__main__':
     convert_mat_to_csv()
+
 
 
