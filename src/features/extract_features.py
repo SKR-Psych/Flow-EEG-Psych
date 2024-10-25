@@ -72,6 +72,10 @@ def process_file(signal_file_path, metadata_file_path, fs):
                 features['event_type'] = event_type
                 features['participant_id'] = os.path.basename(signal_file_path).split('_')[0]
                 features['condition'] = '_'.join(os.path.basename(signal_file_path).split('_')[1:-1])
+                # Add time stamps
+                features['start_time'] = init_time
+                features['end_time'] = init_time + (end_idx - start_idx) / fs
+                features['timestamp'] = (features['start_time'] + features['end_time']) / 2
                 features_list.append(features)
 
         if not features_list:
@@ -113,6 +117,7 @@ def main():
 
     if all_features:
         all_features_df = pd.concat(all_features, ignore_index=True)
+        # Save the combined features to CSV
         all_features_df.to_csv(os.path.join(features_output_dir, 'all_features.csv'), index=False)
         print('Saved all features to all_features.csv')
     else:
@@ -120,3 +125,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
