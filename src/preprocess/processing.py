@@ -56,14 +56,31 @@ def convert_mat_to_csv():
 
             # Extract events
             events = EEG_full.get('event', [])
+            print(f"Type of events: {type(events)}")
+            print(f"Events: {events}")
+
+            # Ensure 'events' is a list
+            if isinstance(events, dict):
+                events = [events]
+            elif not isinstance(events, list):
+                events = list(events)
+
             event_list = []
             for event in events:
                 event_dict = {}
-                for key, value in event.items():
-                    # Handle nested arrays or structures if necessary
-                    if isinstance(value, (np.ndarray, list)) and len(value) == 1:
-                        value = value[0]
-                    event_dict[key] = value
+                if isinstance(event, dict):
+                    for key, value in event.items():
+                        # Handle nested arrays or structures if necessary
+                        if isinstance(value, (np.ndarray, list)):
+                            try:
+                                if len(value) == 1:
+                                    value = value[0]
+                            except TypeError:
+                                pass
+                        event_dict[key] = value
+                else:
+                    print(f"Unexpected event type: {type(event)}")
+                    continue
                 event_list.append(event_dict)
 
             # Create DataFrame and save metadata
@@ -84,7 +101,5 @@ def convert_mat_to_csv():
 
 if __name__ == '__main__':
     convert_mat_to_csv()
-
-
 
 
