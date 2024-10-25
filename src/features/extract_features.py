@@ -22,7 +22,7 @@ default_fs = 256  # Sampling rate in Hz
 # Function to compute band power for a specific frequency band
 def compute_band_power(signal, fs, band):
     fmin, fmax = band
-    nperseg = min(1024, len(signal))  # Adjust nperseg based on signal length
+    nperseg = min(256, len(signal))  # Adjust nperseg based on signal length
     f, Pxx = welch(signal, fs, nperseg=nperseg)
     band_power = np.trapz(Pxx[(f >= fmin) & (f <= fmax)], f[(f >= fmin) & (f <= fmax)])
     return band_power
@@ -73,11 +73,9 @@ for file in os.listdir(processed_data_dir):
             if os.path.exists(metadata_path):
                 metadata = pd.read_csv(metadata_path)
                 if 'sampling_rate' in metadata.columns:
-                    fs_value = metadata['sampling_rate'].values[0]
-                    if isinstance(fs_value, str) and fs_value.startswith('[['):
-                        fs = float(fs_value.strip('[]'))
-                    else:
-                        fs = float(fs_value)
+                    fs_raw = metadata['sampling_rate'].values[0]
+                    # Handle nested list format
+                    fs = fs_raw if isinstance(fs_raw, (int, float)) else float(fs_raw[0][0])
                 else:
                     fs = default_fs
             else:
