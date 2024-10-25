@@ -5,14 +5,23 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import GroupShuffleSplit
+from sklearn.metrics import classification_report
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+import seaborn as sns
+import random
 
-# Check if GPU is available
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f'Using device: {device}')
+# Set random seeds for reproducibility
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
+# Custom Dataset Class
 class EEGDataset(Dataset):
     def __init__(self, sequences, labels):
         self.X = sequences
@@ -26,44 +35,76 @@ class EEGDataset(Dataset):
         y_tensor = torch.tensor(self.y[idx], dtype=torch.long)
         return X_tensor, y_tensor
 
+# LSTM Model Definition
 class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_classes):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout=0.5):
         super(LSTMModel, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+
+        # LSTM Layer
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+
+        # Fully Connected Layers
         self.fc1 = nn.Linear(hidden_size, 32)
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(dropout)
         self.fc2 = nn.Linear(32, num_classes)
 
     def forward(self, x):
-        out, _ = self.lstm(x)
-        out = out[:, -1, :]  # Get the output of the last time step
+        # Set initial hidden and cell states 
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device) 
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+        
+        # Forward propagate LSTM
+        out, _ = self.lstm(x, (h0, c0))  # out: tensor of shape (batch_size, seq_length, hidden_size)
+        
+        # Take the output from the last time step
+        out = out[:, -1, :]  # (batch_size, hidden_size)
+        
+        # Fully connected layers
         out = torch.relu(self.fc1(out))
         out = self.dropout(out)
-        out = self.fc2(out)
+        out = self.fc2(out)  # (batch_size, num_classes)
         return out
 
 def main():
+    # Set random seed
+    set_seed(42)
+
+    # Device configuration
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Using device: {device}')
+
     # Set up paths
     current_dir = os.path.dirname(os.path.abspath(__file__))
     features_dir = os.path.join(current_dir, '../../data/features/')
     features_file = os.path.join(features_dir, 'all_features.csv')
+    model_save_path = os.path.join(current_dir, 'trained_lstm_model.pth')
+    log_dir = os.path.join(current_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
 
     # Load features
     df = pd.read_csv(features_file)
     print('Features loaded successfully.')
 
     # Preprocessing
+    # Handle missing values
+    initial_shape = df.shape
     df = df.dropna()
-    print('Missing values handled.')
+    final_shape = df.shape
+    print(f'Missing values handled. Dropped {initial_shape[0] - final_shape[0]} rows.')
 
+    # Encode labels
     label_encoder = LabelEncoder()
     df['event_type_encoded'] = label_encoder.fit_transform(df['event_type'])
     num_classes = len(label_encoder.classes_)
-    print('Labels encoded.')
+    print(f'Labels encoded. Classes: {label_encoder.classes_}')
 
+    # Sort by participant_id and timestamp to maintain temporal order
     df = df.sort_values(by=['participant_id', 'timestamp'])
     print('Data sorted by participant and timestamp.')
 
+    # Feature columns
     feature_columns = [
         'mean', 'std', 'var', 'skew', 'kurtosis', 'zero_crossing_rate',
         'bandpower_delta', 'relative_power_delta', 'bandpower_theta',
@@ -72,18 +113,20 @@ def main():
         'relative_power_gamma'
     ]
 
+    # Scale features
     scaler = StandardScaler()
     df[feature_columns] = scaler.fit_transform(df[feature_columns])
     print('Features scaled.')
 
     # Generate sequences
-    sequence_length = 5
+    sequence_length = 5  # Number of time steps per sequence
     sequences = []
     labels = []
-    groups = []
+    groups = []  # To keep track of participant IDs for GroupShuffleSplit
     participants = df['participant_id'].unique()
 
-    for participant in participants:
+    print('Generating sequences...')
+    for participant in tqdm(participants, desc='Participants'):
         participant_df = df[df['participant_id'] == participant]
         channels = participant_df['channel'].unique()
 
@@ -95,7 +138,7 @@ def main():
 
             for i in range(len(data) - sequence_length + 1):
                 seq = data[i:i+sequence_length]
-                lbl = label[i+sequence_length-1]
+                lbl = label[i+sequence_length-1]  # Label for the last time step in the sequence
                 sequences.append(seq)
                 labels.append(lbl)
                 groups.append(participant)
@@ -104,66 +147,172 @@ def main():
     labels = np.array(labels)
     print(f'Total sequences generated: {sequences.shape[0]}')
 
-    # Split data
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    train_idx, test_idx = next(gss.split(sequences, labels, groups=groups))
+    # Split data while avoiding data leakage (GroupShuffleSplit by participant)
+    splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_idx, test_idx = next(splitter.split(sequences, labels, groups=groups))
 
     X_train, X_test = sequences[train_idx], sequences[test_idx]
     y_train, y_test = labels[train_idx], labels[test_idx]
-    print('Data split into training and testing sets.')
+    print(f'Data split into training and testing sets.')
+    print(f'Training samples: {X_train.shape[0]}, Testing samples: {X_test.shape[0]}')
 
-    # Create datasets and dataloaders
+    # Create Datasets and DataLoaders
     train_dataset = EEGDataset(X_train, y_train)
     test_dataset = EEGDataset(X_test, y_test)
 
     batch_size = 32
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
-    # Initialize model
-    input_size = sequences.shape[2]
+    # Initialize the model
+    input_size = sequences.shape[2]  # Number of features
     hidden_size = 64
-    model = LSTMModel(input_size, hidden_size, num_classes).to(device)
+    num_layers = 2
+    model = LSTMModel(input_size, hidden_size, num_layers, num_classes, dropout=0.5).to(device)
     print('Model initialized.')
 
     # Define loss and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-    # Training loop
+    # Training parameters
     num_epochs = 50
-    for epoch in range(num_epochs):
+    best_val_accuracy = 0.0
+
+    # Training loop with progress bars
+    for epoch in range(1, num_epochs + 1):
         model.train()
-        for X_batch, y_batch in train_loader:
+        train_loss = 0.0
+        correct_train = 0
+        total_train = 0
+
+        progress_bar = tqdm(train_loader, desc=f'Epoch {epoch}/{num_epochs}', leave=False)
+        for X_batch, y_batch in progress_bar:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
 
+            # Forward pass
             outputs = model(X_batch)
             loss = criterion(outputs, y_batch)
 
+            # Backward and optimize
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
+            train_loss += loss.item() * X_batch.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            total_train += y_batch.size(0)
+            correct_train += (predicted == y_batch).sum().item()
+
+            progress_bar.set_postfix({'Batch Loss': loss.item():.4f})
+
+        avg_train_loss = train_loss / total_train
+        train_accuracy = 100 * correct_train / total_train
+
         # Validation
         model.eval()
+        val_loss = 0.0
+        correct_val = 0
+        total_val = 0
+        all_preds = []
+        all_labels = []
+
         with torch.no_grad():
-            correct = 0
-            total = 0
-            for X_batch, y_batch in test_loader:
+            for X_batch, y_batch in tqdm(test_loader, desc='Validation', leave=False):
                 X_batch = X_batch.to(device)
                 y_batch = y_batch.to(device)
-                outputs = model(X_batch)
-                _, predicted = torch.max(outputs.data, 1)
-                total += y_batch.size(0)
-                correct += (predicted == y_batch).sum().item()
-            accuracy = 100 * correct / total
-        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}, Test Accuracy: {accuracy:.2f}%')
 
-    # Save the model
-    model_save_path = os.path.join(current_dir, 'trained_lstm_model.pth')
-    torch.save(model.state_dict(), model_save_path)
-    print(f'Model saved to {model_save_path}')
+                outputs = model(X_batch)
+                loss = criterion(outputs, y_batch)
+
+                val_loss += loss.item() * X_batch.size(0)
+                _, predicted = torch.max(outputs.data, 1)
+                total_val += y_batch.size(0)
+                correct_val += (predicted == y_batch).sum().item()
+
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(y_batch.cpu().numpy())
+
+        avg_val_loss = val_loss / total_val
+        val_accuracy = 100 * correct_val / total_val
+
+        # Check for improvement
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
+            torch.save(model.state_dict(), model_save_path)
+            improved = True
+        else:
+            improved = False
+
+        # Logging
+        print(f'Epoch [{epoch}/{num_epochs}]')
+        print(f'Train Loss: {avg_train_loss:.4f}, Train Accuracy: {train_accuracy:.2f}%')
+        print(f'Validation Loss: {avg_val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%')
+        if improved:
+            print('Validation accuracy improved. Model saved.')
+        else:
+            print('No improvement in validation accuracy.')
+
+    # Load the best model for final evaluation
+    model.load_state_dict(torch.load(model_save_path))
+    model.eval()
+
+    # Final Evaluation on Test Set
+    correct = 0
+    total = 0
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for X_batch, y_batch in tqdm(test_loader, desc='Final Evaluation'):
+            X_batch = X_batch.to(device)
+            y_batch = y_batch.to(device)
+
+            outputs = model(X_batch)
+            _, predicted = torch.max(outputs.data, 1)
+            total += y_batch.size(0)
+            correct += (predicted == y_batch).sum().item()
+
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(y_batch.cpu().numpy())
+
+    test_accuracy = 100 * correct / total
+    print(f'Final Test Accuracy: {test_accuracy:.2f}%')
+
+    # Classification Report
+    print('\nClassification Report:')
+    report = classification_report(all_labels, all_preds, target_names=label_encoder.classes_)
+    print(report)
+
+    # Confusion Matrix
+    cm = confusion_matrix(all_labels, all_preds)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=label_encoder.classes_,
+                yticklabels=label_encoder.classes_)
+    plt.ylabel('Actual')
+    plt.xlabel('Predicted')
+    plt.title('Confusion Matrix')
+    plt.show()
+
+    # Save Classification Report
+    report_df = pd.DataFrame(classification_report(all_labels, all_preds, target_names=label_encoder.classes_, output_dict=True)).transpose()
+    report_df.to_csv(os.path.join(log_dir, 'classification_report_evaluate.csv'))
+    print(f'Classification report saved to {os.path.join(log_dir, "classification_report_evaluate.csv")}')
+    
+    # Save Confusion Matrix Plot
+    cm_plot_path = os.path.join(log_dir, 'confusion_matrix_evaluate.png')
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=label_encoder.classes_,
+                yticklabels=label_encoder.classes_)
+    plt.ylabel('Actual')
+    plt.xlabel('Predicted')
+    plt.title('Confusion Matrix')
+    plt.savefig(cm_plot_path)
+    plt.close()
+    print(f'Confusion matrix plot saved to {cm_plot_path}')
 
 if __name__ == '__main__':
     main()
