@@ -4,4 +4,8 @@
 # Ignore all MAT files in the repository
 *.mat
 
-*.sami
+# Ignore virtual environment directories
+venv/
+venv/
+env/
+ENV/

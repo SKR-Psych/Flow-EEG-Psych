@@ -1,89 +1,82 @@
 import os
 import numpy as np
 import pandas as pd
-from scipy.signal import stft
+from load_data import load_mat_file, get_mat_file_list
 
-# Path to processed data folder containing CSV files
-processed_data_path = 'data/processed/'
+def convert_mat_to_csv():
+    # Define paths relative to this script's location
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    raw_data_dir = os.path.join(current_dir, '../../data/raw/')
+    processed_data_dir = os.path.join(current_dir, '../../data/processed/')
 
-# Output folder for STFT data
-stft_data_path = 'data/stft/'
+    # Ensure the processed data directory exists
+    os.makedirs(processed_data_dir, exist_ok=True)
 
-# Create output directory if it doesn't exist
-if not os.path.exists(stft_data_path):
-    os.makedirs(stft_data_path)
+    # Get list of .mat files
+    mat_files = get_mat_file_list(raw_data_dir)
 
-def stft_transform(csv_file, fs=256, nperseg=64):
-    # Load the CSV data
-    df = pd.read_csv(csv_file)
-    
-    # Extract channel names from columns
-    channel_names = df.columns.tolist()
-    
-    # Convert DataFrame to NumPy array for STFT processing
-    data = df.to_numpy()  # Shape: (n_samples, n_channels)
+    for mat_file in mat_files:
+        print(f'Processing {mat_file}...')
 
-    # Initialize lists to store STFT results
-    frequencies = None
-    times = None
-    stft_results = []
+        # Load the .mat file
+        mat = load_mat_file(os.path.join(raw_data_dir, mat_file))
 
-    # Perform STFT for each channel
-    for i, channel in enumerate(channel_names):
-        f, t, Zxx = stft(data[:, i], fs=fs, nperseg=nperseg, noverlap=nperseg // 2)
-        
-        # Store frequency and time data once
-        if frequencies is None:
-            frequencies = f
-            times = t
+        # Extract the EEG data structure
+        try:
+            BF_Data = mat['BF_Data']
+            EEG_full = BF_Data.actualVariable.EEG_full
 
-        # Store the magnitude of the STFT
-        stft_results.append(np.abs(Zxx))
+            # Extract data
+            data = EEG_full.data  # Shape: (channels x timepoints)
+            data = data.astype(np.float64)  # Ensure data is in float64 format
 
-    # Make sure the STFT results are consistent for all channels
-    num_frequencies = len(frequencies)
-    num_times = len(times)
+            # Extract event markers
+            events = EEG_full.event  # List of events
 
-    # Flatten the STFT results for each channel and create DataFrame
-    flattened_results = {}
-    flattened_results['Frequency (Hz)'] = np.tile(frequencies, num_times)
-    flattened_results['Time (s)'] = np.repeat(times, num_frequencies)
+            # Extract channel information
+            chanlocs = EEG_full.chanlocs  # List of channel info
 
-    for i, channel in enumerate(channel_names):
-        flattened_results[channel] = stft_results[i].flatten()
+            # Create a DataFrame for the signals
+            data = data.T  # Transpose to get timepoints x channels
 
-    # Create a DataFrame and save the results
-    output_file = os.path.join(stft_data_path, os.path.basename(csv_file).replace('_signals.csv', '_stft.csv'))
-    stft_df = pd.DataFrame(flattened_results)
-    stft_df.to_csv(output_file, index=False)
-    print(f"STFT data saved to: {output_file}")
+            # Extract channel labels
+            channel_labels = []
+            for chan in np.ravel(chanlocs):
+                label = chan.labels
+                channel_labels.append(label)
+            signal_df = pd.DataFrame(data, columns=channel_labels)
 
-def main():
-    # Loop through all processed CSV files and apply STFT
-    print(f"Looking for files in: {processed_data_path}")
-    files_found = False
-    for file in os.listdir(processed_data_path):
-        if file.endswith('.csv') and 'signals' in file:
-            # Check if the corresponding STFT file already exists
-            output_filename = file.replace('_signals.csv', '_stft.csv')
-            output_filepath = os.path.join(stft_data_path, output_filename)
+            # Save signals to CSV
+            signal_csv_filename = mat_file.replace('.mat', '_signals.csv')
+            signal_csv_path = os.path.join(processed_data_dir, signal_csv_filename)
+            signal_df.to_csv(signal_csv_path, index=False)
+            print(f'Saved signals to {signal_csv_path}')
 
-            if os.path.exists(output_filepath):
-                print(f"Skipping already processed file: {file}")
-                continue
-            
-            # Proceed with processing the file if not already done
-            files_found = True
-            file_path = os.path.join(processed_data_path, file)
-            print(f"Processing file: {file_path}")
-            try:
-                stft_transform(file_path)
-            except Exception as e:
-                print(f"Error processing {file_path}: {e}")
+            # Process events
+            event_list = []
+            for event in np.ravel(events):
+                event_dict = {}
+                for field_name in event._fieldnames:
+                    value = getattr(event, field_name)
+                    event_dict[field_name] = value
+                event_list.append(event_dict)
 
-    if not files_found:
-        print("No files found in the processed data directory to apply STFT.")
+            # Create a DataFrame for the metadata/events
+            metadata_df = pd.DataFrame(event_list)
 
-if __name__ == "__main__":
-    main()
+            # Save metadata to CSV
+            metadata_csv_filename = mat_file.replace('.mat', '_metadata.csv')
+            metadata_csv_path = os.path.join(processed_data_dir, metadata_csv_filename)
+            metadata_df.to_csv(metadata_csv_path, index=False)
+            print(f'Saved metadata to {metadata_csv_path}')
+
+        except Exception as e:
+            print(f'Error processing {mat_file}: {e}')
+            continue
+
+    print('All files processed.')
+
+if __name__ == '__main__':
+    convert_mat_to_csv()
+
 

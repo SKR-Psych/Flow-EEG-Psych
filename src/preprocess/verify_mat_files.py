@@ -1,45 +1,64 @@
-import h5py
 import os
+from load_data import load_mat_file, get_mat_file_list
 
-# Directory containing raw .mat files
-raw_data_dir = "data/raw/"
+def verify_mat_files():
+    # Define paths relative to this script's location
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    raw_data_dir = os.path.join(current_dir, '../../data/raw/')
 
-def inspect_group(group, indent=0):
-    """Recursively prints the contents of an HDF5 group."""
-    for key in group.keys():
-        item = group[key]
-        if isinstance(item, h5py.Group):
-            print(f"{' ' * indent}Group: {key}")
-            inspect_group(item, indent + 2)
-        elif isinstance(item, h5py.Dataset):
-            print(f"{' ' * indent}Dataset: {key}, Shape: {item.shape}")
+    # Get list of .mat files
+    mat_files = get_mat_file_list(raw_data_dir)
 
-for file in os.listdir(raw_data_dir):
-    if file.endswith('.mat'):
-        file_path = os.path.join(raw_data_dir, file)
+    all_files_good = True
+
+    for mat_file in mat_files:
+        print(f'Verifying {mat_file}...')
+
+        # Load the .mat file
         try:
-            with h5py.File(file_path, 'r') as f:
-                keys = list(f.keys())
-                print(f"{file}: {keys}")
-                
-                # Check what is inside 'actualVariable'
-                if 'actualVariable' in keys:
-                    actual_variable = f['actualVariable']
-                    if isinstance(actual_variable, h5py.Group):
-                        print(f"Contents of 'actualVariable' in {file}: {list(actual_variable.keys())}")
+            mat = load_mat_file(os.path.join(raw_data_dir, mat_file))
 
-                        # Check the 'EEG_full' group
-                        if 'EEG_full' in actual_variable:
-                            eeg_full = actual_variable['EEG_full']
-                            if isinstance(eeg_full, h5py.Group):
-                                print(f"'EEG_full' is a group in {file}, exploring contents...")
-                                inspect_group(eeg_full)
-                            elif isinstance(eeg_full, h5py.Dataset):
-                                print(f"'EEG_full' is a dataset in {file}, shape: {eeg_full.shape}")
-                        else:
-                            print(f"'EEG_full' not found in 'actualVariable' in {file}")
-                    else:
-                        print(f"'actualVariable' in {file} is not a group.")
+            # Check for 'BF_Data' key
+            if 'BF_Data' not in mat:
+                print(f'Error: {mat_file} does not contain BF_Data.')
+                all_files_good = False
+                continue
+
+            BF_Data = mat['BF_Data']
+
+            # Check for 'actualVariable' and 'EEG_full'
+            if not hasattr(BF_Data, 'actualVariable') or not hasattr(BF_Data.actualVariable, 'EEG_full'):
+                print(f'Error: {mat_file} does not have the expected structure (actualVariable.EEG_full).')
+                all_files_good = False
+                continue
+
+            EEG_full = BF_Data.actualVariable.EEG_full
+
+            # Verify data
+            if not hasattr(EEG_full, 'data'):
+                print(f'Error: {mat_file} EEG_full does not contain data.')
+                all_files_good = False
+
+            # Verify events
+            if not hasattr(EEG_full, 'event'):
+                print(f'Error: {mat_file} EEG_full does not contain events.')
+                all_files_good = False
+
+            # Verify channel locations
+            if not hasattr(EEG_full, 'chanlocs'):
+                print(f'Error: {mat_file} EEG_full does not contain chanlocs.')
+                all_files_good = False
+
         except Exception as e:
-            print(f"Error opening {file}: {e}")
+            print(f'Error verifying {mat_file}: {e}')
+            all_files_good = False
+            continue
+
+    if all_files_good:
+        print('All .mat files are verified and usable.')
+    else:
+        print('Some .mat files have issues. Please check the error messages above.')
+
+if __name__ == '__main__':
+    verify_mat_files()
 
