@@ -5,7 +5,8 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import GroupShuffleSplit
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.utils.class_weight import compute_class_weight
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -107,6 +108,13 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
+    # Compute class weights to handle class imbalance
+    class_weights = compute_class_weight(class_weight='balanced',
+                                         classes=np.unique(y_train),
+                                         y=y_train)
+    class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
+    print(f'Class weights: {class_weights}')
+
     # Initialize the model
     input_size = sequences.shape[2]
     hidden_size = 64
@@ -115,12 +123,14 @@ def main():
     print('Model initialized.')
 
     # Define loss and optimizer
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     # Training parameters
     num_epochs = 50
     best_val_accuracy = 0.0
+    patience = 5  # For early stopping
+    counter = 0
 
     # Training loop
     for epoch in range(1, num_epochs + 1):
@@ -158,6 +168,8 @@ def main():
         val_loss = 0.0
         correct_val = 0
         total_val = 0
+        all_preds = []
+        all_labels = []
 
         with torch.no_grad():
             for X_batch, y_batch in tqdm(test_loader, desc='Validation', leave=False):
@@ -172,6 +184,9 @@ def main():
                 total_val += y_batch.size(0)
                 correct_val += (predicted == y_batch).sum().item()
 
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(y_batch.cpu().numpy())
+
         avg_val_loss = val_loss / total_val
         val_accuracy = 100 * correct_val / total_val
 
@@ -179,8 +194,10 @@ def main():
         if val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
             torch.save(model.state_dict(), model_save_path)
+            counter = 0
             improved = True
         else:
+            counter += 1
             improved = False
 
         # Logging
@@ -191,10 +208,18 @@ def main():
             print('Validation accuracy improved. Model saved.')
         else:
             print('No improvement in validation accuracy.')
+            if counter >= patience:
+                print('Early stopping triggered.')
+                break
 
     # Load the best model for final evaluation
-    model.load_state_dict(torch.load(model_save_path))
-    model.eval()
+    try:
+        model.load_state_dict(torch.load(model_save_path, map_location=device))
+        model.eval()
+        print(f'Loaded best model from {model_save_path}')
+    except Exception as e:
+        print(f'Error loading the best model: {e}')
+        return
 
     # Final Evaluation on Test Set
     correct = 0
@@ -254,3 +279,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

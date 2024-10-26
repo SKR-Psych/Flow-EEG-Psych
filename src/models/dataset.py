@@ -5,6 +5,11 @@ from torch.utils.data import Dataset
 
 class EEGDataset(Dataset):
     def __init__(self, sequences, labels):
+        """
+        Args:
+            sequences (numpy.ndarray): Array of shape (num_samples, sequence_length, num_features)
+            labels (numpy.ndarray): Array of shape (num_samples,)
+        """
         self.X = sequences
         self.y = labels
 
@@ -15,3 +20,4 @@ class EEGDataset(Dataset):
         X_tensor = torch.tensor(self.X[idx], dtype=torch.float32)
         y_tensor = torch.tensor(self.y[idx], dtype=torch.long)
         return X_tensor, y_tensor
+

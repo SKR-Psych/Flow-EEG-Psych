@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import GroupShuffleSplit
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -111,10 +112,14 @@ def main():
 
     # Load the trained model
     if os.path.exists(model_save_path):
-        model.load_state_dict(torch.load(model_save_path))
-        model.to(device)
-        model.eval()
-        print(f'Loaded model from {model_save_path}')
+        try:
+            model.load_state_dict(torch.load(model_save_path, map_location=device))
+            model.to(device)
+            model.eval()
+            print(f'Loaded model from {model_save_path}')
+        except Exception as e:
+            print(f'Error loading the model: {e}')
+            return
     else:
         print(f'Model file {model_save_path} not found. Exiting evaluation.')
         return
@@ -178,3 +183,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
