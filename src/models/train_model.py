@@ -19,7 +19,7 @@ from dataset import EEGDataset
 from utils import set_seed
 
 def main():
-    # Set random seed
+    # Set random seed for reproducibility
     set_seed(42)
 
     # Device configuration
@@ -59,7 +59,7 @@ def main():
     ]
 
     scaler = StandardScaler()
-    # Fit scaler on the entire dataset
+    # Fit scaler on the entire dataset to maintain consistency
     df[feature_columns] = scaler.fit_transform(df[feature_columns])
     print('Features scaled.')
 
@@ -92,7 +92,7 @@ def main():
     labels = np.array(labels)
     print(f'Total sequences generated: {sequences.shape[0]}')
 
-    # Split data
+    # Split data using GroupShuffleSplit to ensure no leakage between participants
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
     train_idx, test_idx = next(splitter.split(sequences, labels, groups=groups))
 
@@ -110,10 +110,16 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
     # Compute class weights to handle class imbalance
-    # Compute weights for all classes (0 to num_classes-1)
-    class_weights = compute_class_weight(class_weight='balanced',
-                                         classes=np.arange(num_classes),
-                                         y=y_train)
+    # Only include classes present in y_train
+    classes_in_train = np.unique(y_train)
+    class_weights_list = compute_class_weight(class_weight='balanced',
+                                             classes=classes_in_train,
+                                             y=y_train)
+    # Initialize all class weights to 1.0
+    class_weights = np.ones(num_classes)
+    # Assign computed weights to the corresponding classes
+    class_weights[classes_in_train] = class_weights_list
+    # Convert to torch tensor
     class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
     print(f'Class weights: {class_weights}')
 
