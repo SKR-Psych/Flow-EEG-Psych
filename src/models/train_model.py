@@ -59,6 +59,7 @@ def main():
     ]
 
     scaler = StandardScaler()
+    # Fit scaler on the entire dataset
     df[feature_columns] = scaler.fit_transform(df[feature_columns])
     print('Features scaled.')
 
@@ -109,8 +110,9 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
     # Compute class weights to handle class imbalance
+    # Compute weights for all classes (0 to num_classes-1)
     class_weights = compute_class_weight(class_weight='balanced',
-                                         classes=np.unique(y_train),
+                                         classes=np.arange(num_classes),
                                          y=y_train)
     class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
     print(f'Class weights: {class_weights}')
@@ -245,34 +247,36 @@ def main():
 
     # Classification Report
     print('\nClassification Report:')
-    report = classification_report(all_labels, all_preds, target_names=label_encoder.classes_)
+    report = classification_report(all_labels, all_preds, target_names=label_encoder.classes_, zero_division=0)
     print(report)
 
     # Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(12, 10))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=label_encoder.classes_,
                 yticklabels=label_encoder.classes_)
     plt.ylabel('Actual')
     plt.xlabel('Predicted')
     plt.title('Confusion Matrix')
+    plt.tight_layout()
     plt.show()
 
     # Save Classification Report
-    report_df = pd.DataFrame(classification_report(all_labels, all_preds, target_names=label_encoder.classes_, output_dict=True)).transpose()
+    report_df = pd.DataFrame(classification_report(all_labels, all_preds, target_names=label_encoder.classes_, output_dict=True, zero_division=0)).transpose()
     report_df.to_csv(os.path.join(log_dir, 'classification_report_evaluate.csv'))
     print(f'Classification report saved to {os.path.join(log_dir, "classification_report_evaluate.csv")}')
 
     # Save Confusion Matrix Plot
     cm_plot_path = os.path.join(log_dir, 'confusion_matrix_evaluate.png')
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(12, 10))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=label_encoder.classes_,
                 yticklabels=label_encoder.classes_)
     plt.ylabel('Actual')
     plt.xlabel('Predicted')
     plt.title('Confusion Matrix')
+    plt.tight_layout()
     plt.savefig(cm_plot_path)
     plt.close()
     print(f'Confusion matrix plot saved to {cm_plot_path}')

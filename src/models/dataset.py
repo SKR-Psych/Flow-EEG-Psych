@@ -21,3 +21,4 @@ class EEGDataset(Dataset):
         y_tensor = torch.tensor(self.y[idx], dtype=torch.long)
         return X_tensor, y_tensor
 
+
