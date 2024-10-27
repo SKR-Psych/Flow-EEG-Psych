@@ -18,7 +18,7 @@ from dataset import EEGDataset
 from utils import set_seed
 
 def main():
-    # Set random seed
+    # Set random seed for reproducibility
     set_seed(42)
 
     # Device configuration
@@ -57,12 +57,7 @@ def main():
         'relative_power_gamma'
     ]
 
-    scaler = StandardScaler()
-    # Fit scaler on the entire dataset
-    df[feature_columns] = scaler.fit_transform(df[feature_columns])
-    print('Features scaled.')
-
-    # Generate sequences
+    # Split data before scaling to prevent data leakage
     sequence_length = 5
     sequences = []
     labels = []
@@ -91,7 +86,7 @@ def main():
     labels = np.array(labels)
     print(f'Total sequences generated: {sequences.shape[0]}')
 
-    # Split data
+    # Split data using GroupShuffleSplit to ensure no leakage between participants
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
     train_idx, test_idx = next(splitter.split(sequences, labels, groups=groups))
 
@@ -100,14 +95,22 @@ def main():
     print(f'Data split into training and testing sets.')
     print(f'Training samples: {X_train.shape[0]}, Testing samples: {X_test.shape[0]}')
 
+    # Scaling: Fit on training data only
+    scaler = StandardScaler()
+    X_train_reshaped = X_train.reshape(-1, X_train.shape[-1])
+    scaler.fit(X_train_reshaped)
+    X_train = scaler.transform(X_train.reshape(-1, X_train.shape[-1])).reshape(X_train.shape)
+    X_test = scaler.transform(X_test.reshape(-1, X_test.shape[-1])).reshape(X_test.shape)
+    print('Features scaled.')
+
     # Create Datasets and DataLoaders
     test_dataset = EEGDataset(X_test, y_test)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, drop_last=False)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, drop_last=False)  # Increased batch size
 
     # Initialize the model
     input_size = sequences.shape[2]
-    hidden_size = 64
-    num_layers = 2
+    hidden_size = 128  # Must match training
+    num_layers = 3      # Must match training
     model = LSTMModel(input_size, hidden_size, num_layers, num_classes, dropout=0.5).to(device)
     print('Model initialized.')
 
@@ -155,7 +158,7 @@ def main():
 
     # Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
-    plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(15, 12))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=label_encoder.classes_,
                 yticklabels=label_encoder.classes_)
@@ -172,7 +175,7 @@ def main():
 
     # Save Confusion Matrix Plot
     cm_plot_path = os.path.join(log_dir, 'confusion_matrix_evaluate.png')
-    plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(15, 12))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=label_encoder.classes_,
                 yticklabels=label_encoder.classes_)

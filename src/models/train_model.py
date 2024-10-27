@@ -18,6 +18,33 @@ from model import LSTMModel
 from dataset import EEGDataset
 from utils import set_seed
 
+# Implementing Focal Loss
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=2, logits=True, reduce=True):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.logits = logits
+        self.reduce = reduce
+
+    def forward(self, inputs, targets):
+        if self.logits:
+            BCE_loss = nn.CrossEntropyLoss(reduction='none')(inputs, targets)
+        else:
+            BCE_loss = nn.BCELoss(reduction='none')(inputs, targets)
+        pt = torch.exp(-BCE_loss)
+        F_loss = (1-pt)**self.gamma * BCE_loss
+        if self.alpha is not None:
+            if isinstance(self.alpha, (float, int)):
+                F_loss = self.alpha * F_loss
+            else:
+                alpha = self.alpha[targets].view(-1, 1)
+                F_loss = alpha * F_loss
+        if self.reduce:
+            return torch.mean(F_loss)
+        else:
+            return F_loss
+
 def main():
     # Set random seed for reproducibility
     set_seed(42)
@@ -58,12 +85,7 @@ def main():
         'relative_power_gamma'
     ]
 
-    scaler = StandardScaler()
-    # Fit scaler on the entire dataset to maintain consistency
-    df[feature_columns] = scaler.fit_transform(df[feature_columns])
-    print('Features scaled.')
-
-    # Generate sequences
+    # Split data before scaling to prevent data leakage
     sequence_length = 5
     sequences = []
     labels = []
@@ -101,11 +123,19 @@ def main():
     print(f'Data split into training and testing sets.')
     print(f'Training samples: {X_train.shape[0]}, Testing samples: {X_test.shape[0]}')
 
+    # Scaling: Fit on training data only
+    scaler = StandardScaler()
+    X_train_reshaped = X_train.reshape(-1, X_train.shape[-1])
+    scaler.fit(X_train_reshaped)
+    X_train = scaler.transform(X_train.reshape(-1, X_train.shape[-1])).reshape(X_train.shape)
+    X_test = scaler.transform(X_test.reshape(-1, X_test.shape[-1])).reshape(X_test.shape)
+    print('Features scaled.')
+
     # Create Datasets and DataLoaders
     train_dataset = EEGDataset(X_train, y_train)
     test_dataset = EEGDataset(X_test, y_test)
 
-    batch_size = 32
+    batch_size = 64  # Increased batch size for faster training
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
@@ -125,14 +155,18 @@ def main():
 
     # Initialize the model
     input_size = sequences.shape[2]
-    hidden_size = 64
-    num_layers = 2
+    hidden_size = 128  # Increased hidden size
+    num_layers = 3      # Increased number of layers
     model = LSTMModel(input_size, hidden_size, num_layers, num_classes, dropout=0.5).to(device)
     print('Model initialized.')
 
     # Define loss and optimizer
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    # Using Focal Loss to address class imbalance
+    criterion = FocalLoss(alpha=class_weights, gamma=2, logits=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
+
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5, verbose=True)
 
     # Training parameters
     num_epochs = 50
@@ -198,6 +232,9 @@ def main():
         avg_val_loss = val_loss / total_val
         val_accuracy = 100 * correct_val / total_val
 
+        # Step the scheduler
+        scheduler.step(avg_val_loss)
+
         # Check for improvement
         if val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
@@ -258,7 +295,7 @@ def main():
 
     # Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
-    plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(15, 12))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=label_encoder.classes_,
                 yticklabels=label_encoder.classes_)
@@ -275,7 +312,7 @@ def main():
 
     # Save Confusion Matrix Plot
     cm_plot_path = os.path.join(log_dir, 'confusion_matrix_evaluate.png')
-    plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(15, 12))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=label_encoder.classes_,
                 yticklabels=label_encoder.classes_)
@@ -286,7 +323,8 @@ def main():
     plt.savefig(cm_plot_path)
     plt.close()
     print(f'Confusion matrix plot saved to {cm_plot_path}')
-
+    
 if __name__ == '__main__':
     main()
+
 
