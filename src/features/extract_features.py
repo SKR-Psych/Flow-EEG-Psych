@@ -3,6 +3,7 @@
 import os
 import numpy as np
 import pandas as pd
+import scipy.io
 import mne
 from mne.preprocessing import ICA, create_eog_epochs
 from mne.channels import make_standard_montage
@@ -84,22 +85,29 @@ def preprocess_eeg(raw):
     
     return raw_clean
 
-def extract_epochs(raw, event_onsets, event_labels, tmin=0, tmax=2):
+def extract_epochs(raw, eeg_data, labels, tmin=0, tmax=2):
     """
     Extract 2-second epochs around event onsets.
     """
-    # Create MNE events array
-    # Assuming event_onsets is a list of sample indices
+    # Create MNE Raw object from eeg_data
+    # Assuming eeg_data is a numpy array of shape (n_channels, n_times)
+    info = raw.info.copy()
+    new_raw = mne.io.RawArray(eeg_data, info)
+    
+    # Create events array
+    # Assuming labels indicate the start of each epoch
+    # For example, labels = [1, 2, 1, 2, ...] alternating between conditions
+    n_epochs = len(labels)
     events = []
-    for onset in event_onsets:
-        events.append([onset, 0, 1])  # Dummy event ID=1
+    for i in range(n_epochs):
+        events.append([i * int(tmax * raw.info['sfreq']), 0, 1])  # Dummy event ID=1
     events = np.array(events)
     
     # Extract epochs
-    epochs = mne.Epochs(raw, events=events, event_id=1, tmin=tmin, tmax=tmax, 
+    epochs = mne.Epochs(new_raw, events=events, event_id=1, tmin=tmin, tmax=tmax, 
                         baseline=None, preload=True, verbose=False)
     X = epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
-    y = np.array(event_labels)
+    y = np.array(labels)
     return X, y
 
 def main():
@@ -116,47 +124,56 @@ def main():
     participant_ids = []
     
     # Iterate Over Each Participant's Raw EEG File
-    raw_files = [f for f in os.listdir(RAW_EEG_DIR) if f.endswith('.edf')]
+    raw_files = [f for f in os.listdir(RAW_EEG_DIR) if f.lower().endswith('.mat')]
     
     if not raw_files:
-        raise FileNotFoundError(f"No .edf files found in {RAW_EEG_DIR}")
+        raise FileNotFoundError(f"No .mat files found in {RAW_EEG_DIR}")
     
     for raw_file in tqdm(raw_files, desc='Processing EEG Files'):
         participant_id = os.path.splitext(raw_file)[0]  # Filename without extension
         raw_path = os.path.join(RAW_EEG_DIR, raw_file)
         
         try:
-            # Load Raw EEG Data
-            raw = mne.io.read_raw_edf(raw_path, preload=True, verbose=False)
+            # Load Raw EEG Data from .mat file
+            mat = scipy.io.loadmat(raw_path)
+            # Replace 'EEG' and 'labels' with actual variable names in your .mat files
+            # For example, if your EEG data is under the key 'EEG', use:
+            eeg_data = mat['EEG']  # Shape: (n_channels, n_times)
+            labels = mat['labels'].flatten()  # Assuming labels are stored in 'labels' variable
+            # If labels are stored differently, adjust accordingly
         except Exception as e:
             print(f"Error loading {raw_file}: {e}")
+            continue
+        
+        # Create MNE Raw object from eeg_data
+        # Assuming eeg_data is already in the shape (n_channels, n_times)
+        # and channels are ordered as per 'standard_1020' montage
+        try:
+            # Create info structure
+            sfreq = 256  # Replace with your actual sampling frequency
+            n_channels = eeg_data.shape[0]
+            ch_names = [f'EEG{i}' for i in range(1, n_channels + 1)]
+            ch_types = ['eeg'] * n_channels
+            info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types=ch_types)
+            raw = mne.io.RawArray(eeg_data, info, verbose=False)
+        except Exception as e:
+            print(f"Error creating Raw object for {raw_file}: {e}")
             continue
         
         # Preprocess EEG Data
         raw_clean = preprocess_eeg(raw)
         
-        # Define Event Onsets and Labels
-        # Replace this section with actual event extraction logic
-        # For illustration, we'll create synthetic events every 2 seconds
-        sfreq = raw_clean.info['sfreq']
-        n_samples = raw_clean.n_times
-        epoch_length = 2  # seconds
-        samples_per_epoch = int(epoch_length * sfreq)
-        
-        event_onsets = list(range(0, n_samples, samples_per_epoch))
-        event_labels = []
-        for i in range(len(event_onsets)):
-            # Alternate labels: 1 for easy, 2 for hard
-            label = 1 if i % 2 == 0 else 2
-            event_labels.append(label)
-        
         # Extract Epochs
-        X, y = extract_epochs(raw_clean, event_onsets, event_labels, tmin=0, tmax=2)
+        X, y = extract_epochs(raw_clean, eeg_data, labels, tmin=0, tmax=2)
         
         # Append to All Data
         all_features.append(X)
         all_labels.append(y)
         participant_ids.extend([participant_id]*len(y))
+    
+    if not all_features:
+        print("No features extracted. Please check your .mat files and labels.")
+        return
     
     # Concatenate All Data
     X_all = np.concatenate(all_features, axis=0)  # Shape: (total_epochs, n_channels, n_times)
@@ -191,3 +208,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
