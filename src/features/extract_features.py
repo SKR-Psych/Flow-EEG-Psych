@@ -3,14 +3,12 @@
 import os
 import numpy as np
 import pandas as pd
-import scipy.io
 import mne
-from mne.preprocessing import ICA, create_eog_epochs
+from mne.preprocessing import ICA
 from mne.channels import make_standard_montage
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -19,12 +17,29 @@ from tqdm import tqdm
 
 # Define Constants
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-RAW_EEG_DIR = os.path.join(BASE_DIR, 'data', 'raw')
+PROCESSED_DATA_DIR = os.path.join(BASE_DIR, 'data', 'processed')
 FEATURES_DIR = os.path.join(BASE_DIR, 'data', 'features')
 MODEL_DIR = os.path.join(BASE_DIR, 'models', 'decoders')
+
+# Ensure output directories exist
 os.makedirs(FEATURES_DIR, exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
+# Sampling Frequency
+SFREQ = 256  # Replace with your actual sampling frequency if different
+
+# Define EEG Channels (first 56 columns based on your sample)
+EEG_CHANNELS = [
+    'Fp1', 'AF7', 'AF3', 'F1', 'F3', 'F5', 'F7', 'FT7', 'FC5', 'FC3',
+    'FC1', 'C1', 'C3', 'C5', 'T7', 'TP7', 'CP5', 'CP3', 'CP1', 'P1',
+    'P3', 'P5', 'P7', 'P9', 'PO7', 'PO3', 'O1', 'Iz', 'Oz', 'POz',
+    'Pz', 'CPz', 'Fpz', 'Fp2', 'AF8', 'AF4', 'AFz', 'Fz', 'F2', 'F4',
+    'F6', 'F8', 'FT8', 'FC6', 'FC4', 'FC2', 'FCz', 'Cz', 'C2', 'C4',
+    'C6', 'T8', 'TP8', 'CP6', 'CP4', 'CP2', 'P2', 'P4', 'P6', 'P8',
+    'P10', 'PO8', 'PO4', 'O2'
+]
+
+# Frequency Bands for FBCSP
 FREQUENCY_BANDS = {
     'delta': (0.5, 4),
     'theta': (4, 8),
@@ -40,24 +55,41 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
         self.frequency_bands = frequency_bands
         self.n_components = n_components
         self.csp_pipelines = {}
+        self.filter_params = {}  # To store filter parameters for each band
 
     def fit(self, X, y):
         for band_name, (fmin, fmax) in self.frequency_bands.items():
             # Bandpass filter
+            filt = mne.filter.create_filter(
+                X.mean(axis=0),
+                SFREQ,
+                l_freq=fmin,
+                h_freq=fmax,
+                method='firwin',
+                verbose=False
+            )
+            # Apply filter to all epochs
+            X_filtered = mne.filter.filter_data(X, SFREQ, l_freq=fmin, h_freq=fmax, verbose=False)
+            
+            # Initialize CSP
             csp = mne.decoding.CSP(n_components=self.n_components, 
                                    reg=None, 
                                    log=True, 
                                    norm_trace=False)
             # Fit CSP
-            csp.fit(X, y)
+            csp.fit(X_filtered, y)
             self.csp_pipelines[band_name] = csp
+            self.filter_params[band_name] = (fmin, fmax)
         return self
 
     def transform(self, X):
         features = []
         for band_name, csp in self.csp_pipelines.items():
+            # Bandpass filter using stored filter params
+            fmin, fmax = self.filter_params[band_name]
+            X_filtered = mne.filter.filter_data(X, SFREQ, l_freq=fmin, h_freq=fmax, verbose=False)
             # Apply CSP
-            csp_features = csp.transform(X)
+            csp_features = csp.transform(X_filtered)
             features.append(csp_features)
         # Concatenate all band features
         return np.hstack(features)
@@ -85,103 +117,110 @@ def preprocess_eeg(raw):
     
     return raw_clean
 
-def extract_epochs(raw, eeg_data, labels, tmin=0, tmax=2):
+def extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2):
     """
-    Extract 2-second epochs around event onsets.
+    Extract epochs from the continuous EEG data based on event timings.
     """
-    # Create MNE Raw object from eeg_data
-    # Assuming eeg_data is a numpy array of shape (n_channels, n_times)
-    info = raw.info.copy()
-    new_raw = mne.io.RawArray(eeg_data, info)
+    epochs = []
+    labels = []
+    participant_id = os.path.basename(signals_df.attrs['filename']).replace('_signals.csv', '')
     
-    # Create events array
-    # Assuming labels indicate the start of each epoch
-    # For example, labels = [1, 2, 1, 2, ...] alternating between conditions
-    n_epochs = len(labels)
-    events = []
-    for i in range(n_epochs):
-        events.append([i * int(tmax * raw.info['sfreq']), 0, 1])  # Dummy event ID=1
-    events = np.array(events)
+    for idx, event in metadata_df.iterrows():
+        event_time = event['init_time']  # in seconds
+        label = event['urevent']  # Assuming 'urevent' is the label
+        
+        # Convert event time to sample index
+        sample = int(event_time * sfreq)
+        
+        # Define epoch start and end samples
+        start_sample = sample
+        end_sample = sample + int(tmax * sfreq)
+        
+        # Check for boundaries
+        if end_sample > len(signals_df):
+            print(f"Epoch end sample {end_sample} exceeds data length {len(signals_df)}. Skipping epoch.")
+            continue
+        
+        # Extract EEG data for the epoch
+        epoch_data = signals_df.iloc[start_sample:end_sample][EEG_CHANNELS].values.T  # shape: (n_channels, n_times)
+        
+        epochs.append(epoch_data)
+        labels.append(label)
     
-    # Extract epochs
-    epochs = mne.Epochs(new_raw, events=events, event_id=1, tmin=tmin, tmax=tmax, 
-                        baseline=None, preload=True, verbose=False)
-    X = epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
-    y = np.array(labels)
-    return X, y
+    return np.array(epochs), np.array(labels)
 
 def main():
-    # Verify RAW_EEG_DIR exists
-    if not os.path.exists(RAW_EEG_DIR):
-        raise FileNotFoundError(f"Raw EEG directory not found: {RAW_EEG_DIR}")
+    print("Starting feature extraction...")
     
     # Initialize Feature Extractor
     fbcsp = FBCSPExtractor(frequency_bands=FREQUENCY_BANDS, n_components=N_COMPONENTS)
     
     # Initialize Lists to Store Data
-    all_features = []
+    all_epochs = []
     all_labels = []
     participant_ids = []
     
-    # Iterate Over Each Participant's Raw EEG File
-    raw_files = [f for f in os.listdir(RAW_EEG_DIR) if f.lower().endswith('.mat')]
+    # Get list of signals CSV files
+    signals_files = [f for f in os.listdir(PROCESSED_DATA_DIR) if f.endswith('_signals.csv')]
     
-    if not raw_files:
-        raise FileNotFoundError(f"No .mat files found in {RAW_EEG_DIR}")
-    
-    for raw_file in tqdm(raw_files, desc='Processing EEG Files'):
-        participant_id = os.path.splitext(raw_file)[0]  # Filename without extension
-        raw_path = os.path.join(RAW_EEG_DIR, raw_file)
-        
-        try:
-            # Load Raw EEG Data from .mat file
-            mat = scipy.io.loadmat(raw_path)
-            # Replace 'EEG' and 'labels' with actual variable names in your .mat files
-            # For example, if your EEG data is under the key 'EEG', use:
-            eeg_data = mat['EEG']  # Shape: (n_channels, n_times)
-            labels = mat['labels'].flatten()  # Assuming labels are stored in 'labels' variable
-            # If labels are stored differently, adjust accordingly
-        except Exception as e:
-            print(f"Error loading {raw_file}: {e}")
-            continue
-        
-        # Create MNE Raw object from eeg_data
-        # Assuming eeg_data is already in the shape (n_channels, n_times)
-        # and channels are ordered as per 'standard_1020' montage
-        try:
-            # Create info structure
-            sfreq = 256  # Replace with your actual sampling frequency
-            n_channels = eeg_data.shape[0]
-            ch_names = [f'EEG{i}' for i in range(1, n_channels + 1)]
-            ch_types = ['eeg'] * n_channels
-            info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types=ch_types)
-            raw = mne.io.RawArray(eeg_data, info, verbose=False)
-        except Exception as e:
-            print(f"Error creating Raw object for {raw_file}: {e}")
-            continue
-        
-        # Preprocess EEG Data
-        raw_clean = preprocess_eeg(raw)
-        
-        # Extract Epochs
-        X, y = extract_epochs(raw_clean, eeg_data, labels, tmin=0, tmax=2)
-        
-        # Append to All Data
-        all_features.append(X)
-        all_labels.append(y)
-        participant_ids.extend([participant_id]*len(y))
-    
-    if not all_features:
-        print("No features extracted. Please check your .mat files and labels.")
+    if not signals_files:
+        print("No signals CSV files found in the processed data directory.")
         return
     
-    # Concatenate All Data
-    X_all = np.concatenate(all_features, axis=0)  # Shape: (total_epochs, n_channels, n_times)
-    y_all = np.concatenate(all_labels, axis=0)    # Shape: (total_epochs,)
+    for signals_file in tqdm(signals_files, desc='Processing Signals Files'):
+        # Derive corresponding metadata file name
+        base_name = signals_file.replace('_signals.csv', '')
+        metadata_file = f"{base_name}_metadata.csv"
+        signals_path = os.path.join(PROCESSED_DATA_DIR, signals_file)
+        metadata_path = os.path.join(PROCESSED_DATA_DIR, metadata_file)
+        
+        if not os.path.exists(metadata_path):
+            print(f"Metadata file {metadata_file} not found for signals file {signals_file}. Skipping.")
+            continue
+        
+        # Read signals CSV
+        try:
+            signals_df = pd.read_csv(signals_path)
+            # Optional: Store filename in DataFrame attributes for tracking
+            signals_df.attrs['filename'] = signals_file
+        except Exception as e:
+            print(f"Error reading {signals_file}: {e}")
+            continue
+        
+        # Read metadata CSV
+        try:
+            metadata_df = pd.read_csv(metadata_path)
+        except Exception as e:
+            print(f"Error reading {metadata_file}: {e}")
+            continue
+        
+        # Extract epochs and labels
+        epochs, labels = extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2)
+        
+        if len(epochs) == 0:
+            print(f"No valid epochs extracted from {signals_file}.")
+            continue
+        
+        all_epochs.append(epochs)
+        all_labels.append(labels)
+        participant_ids.extend([base_name] * len(labels))
+    
+    if not all_epochs:
+        print("No epochs extracted from any files. Exiting.")
+        return
+    
+    # Concatenate all epochs and labels
+    X_all = np.concatenate(all_epochs, axis=0)  # Shape: (total_epochs, n_channels, n_times)
+    y_all = np.concatenate(all_labels, axis=0)  # Shape: (total_epochs,)
     participant_ids = np.array(participant_ids)
     
     # Shuffle Data
     X_all, y_all, participant_ids = shuffle(X_all, y_all, participant_ids, random_state=42)
+    
+    # Preprocess EEG Data (filtering and artifact removal)
+    # Note: Since epochs are already extracted and filtering is applied in preprocess_eeg,
+    # you might skip additional filtering here unless necessary.
+    # For demonstration, we'll proceed with FBCSP directly.
     
     # Fit FBCSP
     print("Fitting FBCSP...")
@@ -197,14 +236,18 @@ def main():
     fbcsp_path = os.path.join(MODEL_DIR, 'fbcsp.joblib')
     joblib.dump(scaler, scaler_path)
     joblib.dump(fbcsp, fbcsp_path)
+    print(f"Saved scaler to {scaler_path}")
+    print(f"Saved FBCSP extractor to {fbcsp_path}")
     
     # Save Features and Labels
     features_df = pd.DataFrame(X_scaled)
     features_df['label'] = y_all
     features_df['participant_id'] = participant_ids
-    features_df.to_csv(os.path.join(FEATURES_DIR, 'all_features.csv'), index=False)
+    features_csv_path = os.path.join(FEATURES_DIR, 'all_features.csv')
+    features_df.to_csv(features_csv_path, index=False)
+    print(f"Saved all features to {features_csv_path}")
     
-    print("Feature extraction completed and saved successfully.")
+    print("Feature extraction completed successfully.")
 
 if __name__ == '__main__':
     main()
