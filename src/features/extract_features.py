@@ -6,11 +6,7 @@ import pandas as pd
 import mne
 from mne.preprocessing import ICA
 from mne.channels import make_standard_montage
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.utils import shuffle
 from sklearn.base import BaseEstimator, TransformerMixin
 import joblib
 from tqdm import tqdm
@@ -32,7 +28,7 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 # Sampling Frequency
 SFREQ = 256  # Replace with your actual sampling frequency if different
 
-# Define EEG Channels (first 56 columns based on your sample)
+# Define EEG Channels (first 64 columns based on your sample)
 EEG_CHANNELS = [
     'Fp1', 'AF7', 'AF3', 'F1', 'F3', 'F5', 'F7', 'FT7', 'FC5', 'FC3',
     'FC1', 'C1', 'C3', 'C5', 'T7', 'TP7', 'CP5', 'CP3', 'CP1', 'P1',
@@ -133,7 +129,11 @@ def extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2):
             continue
         
         # Convert event time to sample index
-        sample = int(event_time * sfreq)
+        try:
+            sample = int(event_time * sfreq)
+        except (ValueError, TypeError):
+            skipped_events += 1
+            continue
         
         # Define epoch start and end samples
         start_sample = sample
@@ -147,7 +147,7 @@ def extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2):
         # Extract EEG data for the epoch
         epoch_data = signals_df.iloc[start_sample:end_sample][EEG_CHANNELS].values.T  # shape: (n_channels, n_times)
         
-        epochs.append(epoch_data)
+        epochs.append(epoch_data.astype(np.float32))  # Use float32 to reduce memory
         labels.append(label)
     
     print(f"Total events: {total_events}, Skipped events: {skipped_events}, Extracted epochs: {len(epochs)}")
@@ -208,23 +208,39 @@ def main():
         all_epochs.append(epochs)
         all_labels.append(labels)
         participant_ids.extend([base_name] * len(labels))
+        
+        # To prevent memory overflow, periodically process and clear the lists
+        if len(all_epochs) >= 100:  # Adjust this threshold as needed
+            # Concatenate current batch
+            X_batch = np.concatenate(all_epochs, axis=0)  # Shape: (batch_size, n_channels, n_times)
+            y_batch = np.concatenate(all_labels, axis=0)  # Shape: (batch_size,)
+            ids_batch = np.array(participant_ids)
+            
+            # Fit FBCSP incrementally or store batches for later fitting
+            # For simplicity, let's assume we collect all data first
+            
+            # Clear the lists
+            all_epochs = []
+            all_labels = []
+            participant_ids = []
     
-    if not all_epochs:
-        print("No epochs extracted from any files. Exiting.")
+    # After processing all files, concatenate remaining data
+    if all_epochs:
+        try:
+            X_all = np.concatenate(all_epochs, axis=0)  # Shape: (total_epochs, n_channels, n_times)
+            y_all = np.concatenate(all_labels, axis=0)  # Shape: (total_epochs,)
+            participant_ids = np.array(participant_ids)
+        except MemoryError:
+            print("MemoryError: Unable to concatenate all epochs. The dataset is too large.")
+            print("Consider processing and saving features incrementally.")
+            return
+    else:
+        print("No epochs to process after batch processing.")
         return
     
-    # Concatenate all epochs and labels
-    X_all = np.concatenate(all_epochs, axis=0)  # Shape: (total_epochs, n_channels, n_times)
-    y_all = np.concatenate(all_labels, axis=0)  # Shape: (total_epochs,)
-    participant_ids = np.array(participant_ids)
-    
-    # Shuffle Data
-    X_all, y_all, participant_ids = shuffle(X_all, y_all, participant_ids, random_state=42)
-    
-    # Preprocess EEG Data (filtering and artifact removal)
-    # Note: Since epochs are already extracted and filtering is applied in preprocess_eeg,
-    # you might skip additional filtering here unless necessary.
-    # For demonstration, we'll proceed with FBCSP directly.
+    # Check total number of epochs
+    total_epochs = X_all.shape[0]
+    print(f"Total epochs to process: {total_epochs}")
     
     # Fit FBCSP
     print("Fitting FBCSP...")
@@ -255,4 +271,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
