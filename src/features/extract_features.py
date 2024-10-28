@@ -1,9 +1,9 @@
-# src/models/feature_extract.py
+# src/features/extract_features.py
 
 import os
 import numpy as np
 import pandas as pd
-from mne.io import read_raw_edf
+import mne
 from mne.preprocessing import ICA, create_eog_epochs
 from mne.channels import make_standard_montage
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
@@ -17,9 +17,10 @@ import joblib
 from tqdm import tqdm
 
 # Define Constants
-RAW_EEG_DIR = '../../data/raw_eeg/'  # Directory containing raw EEG files
-FEATURES_DIR = '../../data/features/'
-MODEL_DIR = '../../models/decoders/'
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+RAW_EEG_DIR = os.path.join(BASE_DIR, 'data', 'raw')
+FEATURES_DIR = os.path.join(BASE_DIR, 'data', 'features')
+MODEL_DIR = os.path.join(BASE_DIR, 'models', 'decoders')
 os.makedirs(FEATURES_DIR, exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -38,7 +39,7 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
         self.frequency_bands = frequency_bands
         self.n_components = n_components
         self.csp_pipelines = {}
-    
+
     def fit(self, X, y):
         for band_name, (fmin, fmax) in self.frequency_bands.items():
             # Bandpass filter
@@ -50,7 +51,7 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
             csp.fit(X, y)
             self.csp_pipelines[band_name] = csp
         return self
-    
+
     def transform(self, X):
         features = []
         for band_name, csp in self.csp_pipelines.items():
@@ -69,10 +70,10 @@ def preprocess_eeg(raw):
     raw.set_montage(montage)
     
     # Bandpass filter
-    raw.filter(0.5, 50., fir_design='firwin')
+    raw.filter(0.5, 50., fir_design='firwin', verbose=False)
     
     # Apply ICA for artifact removal
-    ica = ICA(n_components=15, random_state=97, max_iter='auto')
+    ica = ICA(n_components=15, random_state=97, max_iter='auto', verbose=False)
     ica.fit(raw)
     
     # Find and exclude EOG artifacts
@@ -87,13 +88,25 @@ def extract_epochs(raw, event_onsets, event_labels, tmin=0, tmax=2):
     """
     Extract 2-second epochs around event onsets.
     """
-    epochs = mne.Epochs(raw, events=event_onsets, event_id=None, tmin=tmin, tmax=tmax, 
-                        baseline=None, preload=True)
+    # Create MNE events array
+    # Assuming event_onsets is a list of sample indices
+    events = []
+    for onset in event_onsets:
+        events.append([onset, 0, 1])  # Dummy event ID=1
+    events = np.array(events)
+    
+    # Extract epochs
+    epochs = mne.Epochs(raw, events=events, event_id=1, tmin=tmin, tmax=tmax, 
+                        baseline=None, preload=True, verbose=False)
     X = epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
     y = np.array(event_labels)
     return X, y
 
 def main():
+    # Verify RAW_EEG_DIR exists
+    if not os.path.exists(RAW_EEG_DIR):
+        raise FileNotFoundError(f"Raw EEG directory not found: {RAW_EEG_DIR}")
+    
     # Initialize Feature Extractor
     fbcsp = FBCSPExtractor(frequency_bands=FREQUENCY_BANDS, n_components=N_COMPONENTS)
     
@@ -105,46 +118,40 @@ def main():
     # Iterate Over Each Participant's Raw EEG File
     raw_files = [f for f in os.listdir(RAW_EEG_DIR) if f.endswith('.edf')]
     
+    if not raw_files:
+        raise FileNotFoundError(f"No .edf files found in {RAW_EEG_DIR}")
+    
     for raw_file in tqdm(raw_files, desc='Processing EEG Files'):
-        participant_id = raw_file.split('.')[0]  # Assuming filename starts with participant ID
+        participant_id = os.path.splitext(raw_file)[0]  # Filename without extension
         raw_path = os.path.join(RAW_EEG_DIR, raw_file)
         
-        # Load Raw EEG Data
-        raw = read_raw_edf(raw_path, preload=True, verbose=False)
+        try:
+            # Load Raw EEG Data
+            raw = mne.io.read_raw_edf(raw_path, preload=True, verbose=False)
+        except Exception as e:
+            print(f"Error loading {raw_file}: {e}")
+            continue
         
         # Preprocess EEG Data
         raw_clean = preprocess_eeg(raw)
         
         # Define Event Onsets and Labels
-        # Assuming you have a way to define events based on task difficulty
-        # For illustration, let's create synthetic events:
-        # Event ID 1: Easy (Class 1), Event ID 2: Hard (Class 2)
-        # In practice, replace this with actual event markers from your data
-        
-        # Example: Extracting based on time segments
-        # Let's assume that every 2 seconds is an epoch
-        n_samples = raw_clean.n_times
+        # Replace this section with actual event extraction logic
+        # For illustration, we'll create synthetic events every 2 seconds
         sfreq = raw_clean.info['sfreq']
+        n_samples = raw_clean.n_times
         epoch_length = 2  # seconds
         samples_per_epoch = int(epoch_length * sfreq)
         
-        # Generate synthetic event onsets and labels
-        # Replace this with actual event extraction logic
-        event_onsets = []
+        event_onsets = list(range(0, n_samples, samples_per_epoch))
         event_labels = []
-        for i in range(0, n_samples, samples_per_epoch):
-            if i + samples_per_epoch > n_samples:
-                break
-            event_onsets.append([0, 0, 1])  # Dummy event
-            # Alternate labels for easy and hard
-            label = 1 if (i // samples_per_epoch) % 2 == 0 else 2
+        for i in range(len(event_onsets)):
+            # Alternate labels: 1 for easy, 2 for hard
+            label = 1 if i % 2 == 0 else 2
             event_labels.append(label)
         
         # Extract Epochs
         X, y = extract_epochs(raw_clean, event_onsets, event_labels, tmin=0, tmax=2)
-        
-        # Reshape X for FBCSP: (n_epochs, n_channels, n_times)
-        # FBCSP expects (n_epochs, n_channels, n_times)
         
         # Append to All Data
         all_features.append(X)
@@ -159,14 +166,12 @@ def main():
     # Shuffle Data
     X_all, y_all, participant_ids = shuffle(X_all, y_all, participant_ids, random_state=42)
     
-    # Flatten X for FBCSP: MNE expects (n_epochs, n_channels, n_times)
-    # Already in correct shape
-    
     # Fit FBCSP
+    print("Fitting FBCSP...")
     fbcsp.fit(X_all, y_all)
     X_features = fbcsp.transform(X_all)  # Shape: (n_epochs, n_features)
     
-    # Standardise Features
+    # Standardize Features
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_features)
     
@@ -185,5 +190,4 @@ def main():
     print("Feature extraction completed and saved successfully.")
 
 if __name__ == '__main__':
-    import mne  # Ensure MNE is imported here
     main()
