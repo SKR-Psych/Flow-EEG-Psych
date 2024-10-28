@@ -14,6 +14,10 @@ from sklearn.utils import shuffle
 from sklearn.base import BaseEstimator, TransformerMixin
 import joblib
 from tqdm import tqdm
+import warnings
+
+# Suppress warnings for cleaner output
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # Define Constants
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
@@ -59,16 +63,8 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y):
         for band_name, (fmin, fmax) in self.frequency_bands.items():
+            print(f"Fitting CSP for {band_name} band: {fmin}-{fmax} Hz")
             # Bandpass filter
-            filt = mne.filter.create_filter(
-                X.mean(axis=0),
-                SFREQ,
-                l_freq=fmin,
-                h_freq=fmax,
-                method='firwin',
-                verbose=False
-            )
-            # Apply filter to all epochs
             X_filtered = mne.filter.filter_data(X, SFREQ, l_freq=fmin, h_freq=fmax, verbose=False)
             
             # Initialize CSP
@@ -85,8 +81,8 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
     def transform(self, X):
         features = []
         for band_name, csp in self.csp_pipelines.items():
-            # Bandpass filter using stored filter params
             fmin, fmax = self.filter_params[band_name]
+            # Bandpass filter using stored filter params
             X_filtered = mne.filter.filter_data(X, SFREQ, l_freq=fmin, h_freq=fmax, verbose=False)
             # Apply CSP
             csp_features = csp.transform(X_filtered)
@@ -124,10 +120,17 @@ def extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2):
     epochs = []
     labels = []
     participant_id = os.path.basename(signals_df.attrs['filename']).replace('_signals.csv', '')
+    skipped_events = 0
+    total_events = len(metadata_df)
     
     for idx, event in metadata_df.iterrows():
-        event_time = event['init_time']  # in seconds
-        label = event['urevent']  # Assuming 'urevent' is the label
+        event_time = event.get('init_time', np.nan)  # in seconds
+        label = event.get('urevent', np.nan)        # Assuming 'urevent' is the label
+        
+        # Check for NaN in event_time or label
+        if pd.isna(event_time) or pd.isna(label):
+            skipped_events += 1
+            continue
         
         # Convert event time to sample index
         sample = int(event_time * sfreq)
@@ -138,7 +141,7 @@ def extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2):
         
         # Check for boundaries
         if end_sample > len(signals_df):
-            print(f"Epoch end sample {end_sample} exceeds data length {len(signals_df)}. Skipping epoch.")
+            skipped_events += 1
             continue
         
         # Extract EEG data for the epoch
@@ -147,6 +150,7 @@ def extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2):
         epochs.append(epoch_data)
         labels.append(label)
     
+    print(f"Total events: {total_events}, Skipped events: {skipped_events}, Extracted epochs: {len(epochs)}")
     return np.array(epochs), np.array(labels)
 
 def main():
@@ -181,7 +185,7 @@ def main():
         # Read signals CSV
         try:
             signals_df = pd.read_csv(signals_path)
-            # Optional: Store filename in DataFrame attributes for tracking
+            # Store filename in DataFrame attributes for tracking
             signals_df.attrs['filename'] = signals_file
         except Exception as e:
             print(f"Error reading {signals_file}: {e}")
