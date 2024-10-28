@@ -1,5 +1,3 @@
-# src/features/extract_features.py
-
 import os
 import numpy as np
 import pandas as pd
@@ -160,7 +158,6 @@ def main():
     fbcsp = FBCSPExtractor(frequency_bands=FREQUENCY_BANDS, n_components=N_COMPONENTS)
     
     # Initialize Lists to Store Data
-    all_epochs = []
     all_labels = []
     participant_ids = []
     
@@ -170,6 +167,8 @@ def main():
     if not signals_files:
         print("No signals CSV files found in the processed data directory.")
         return
+    
+    batch_size = 1000  # Adjust this based on available memory
     
     for signals_file in tqdm(signals_files, desc='Processing Signals Files'):
         # Derive corresponding metadata file name
@@ -185,7 +184,6 @@ def main():
         # Read signals CSV
         try:
             signals_df = pd.read_csv(signals_path)
-            # Store filename in DataFrame attributes for tracking
             signals_df.attrs['filename'] = signals_file
         except Exception as e:
             print(f"Error reading {signals_file}: {e}")
@@ -198,79 +196,27 @@ def main():
             print(f"Error reading {metadata_file}: {e}")
             continue
         
-        # Extract epochs and labels
-        epochs, labels = extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2)
-        
-        if len(epochs) == 0:
-            print(f"No valid epochs extracted from {signals_file}.")
-            continue
-        
-        all_epochs.append(epochs)
-        all_labels.append(labels)
-        participant_ids.extend([base_name] * len(labels))
-        
-        # To prevent memory overflow, periodically process and clear the lists
-        if len(all_epochs) >= 100:  # Adjust this threshold as needed
-            # Concatenate current batch
-            X_batch = np.concatenate(all_epochs, axis=0)  # Shape: (batch_size, n_channels, n_times)
-            y_batch = np.concatenate(all_labels, axis=0)  # Shape: (batch_size,)
-            ids_batch = np.array(participant_ids)
+        # Extract epochs and labels in batches
+        for start in range(0, len(signals_df), batch_size):
+            end = start + batch_size
+            epochs, labels = extract_epochs(signals_df.iloc[start:end], metadata_df, sfreq=SFREQ, tmin=0, tmax=2)
             
-            # Fit FBCSP incrementally or store batches for later fitting
-            # For simplicity, let's assume we collect all data first
+            if len(epochs) == 0:
+                print(f"No valid epochs extracted from {signals_file}.")
+                continue
             
-            # Clear the lists
-            all_epochs = []
-            all_labels = []
-            participant_ids = []
-    
-    # After processing all files, concatenate remaining data
-    if all_epochs:
-        try:
-            X_all = np.concatenate(all_epochs, axis=0)  # Shape: (total_epochs, n_channels, n_times)
-            y_all = np.concatenate(all_labels, axis=0)  # Shape: (total_epochs,)
-            participant_ids = np.array(participant_ids)
-        except MemoryError:
-            print("MemoryError: Unable to concatenate all epochs. The dataset is too large.")
-            print("Consider processing and saving features incrementally.")
-            return
-    else:
-        print("No epochs to process after batch processing.")
-        return
-    
-    # Check total number of epochs
-    total_epochs = X_all.shape[0]
-    print(f"Total epochs to process: {total_epochs}")
-    
-    # Fit FBCSP
-    print("Fitting FBCSP...")
-    fbcsp.fit(X_all, y_all)
-    X_features = fbcsp.transform(X_all)  # Shape: (n_epochs, n_features)
-    
-    # Standardize Features
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_features)
-    
-    # Save Scaler and FBCSP Models
-    scaler_path = os.path.join(MODEL_DIR, 'scaler.joblib')
-    fbcsp_path = os.path.join(MODEL_DIR, 'fbcsp.joblib')
-    joblib.dump(scaler, scaler_path)
-    joblib.dump(fbcsp, fbcsp_path)
-    print(f"Saved scaler to {scaler_path}")
-    print(f"Saved FBCSP extractor to {fbcsp_path}")
-    
-    # Save Features and Labels
-    features_df = pd.DataFrame(X_scaled)
-    features_df['label'] = y_all
-    features_df['participant_id'] = participant_ids
-    features_csv_path = os.path.join(FEATURES_DIR, 'all_features.csv')
-    features_df.to_csv(features_csv_path, index=False)
-    print(f"Saved all features to {features_csv_path}")
-    
-    print("Feature extraction completed successfully.")
+            # Fit and transform each batch to avoid memory overload
+            fbcsp.fit(epochs.astype(np.float64), labels)
+            X_features = fbcsp.transform(epochs.astype(np.float64))
+            
+            all_labels.extend(labels)
+            participant_ids.extend([base_name] * len(labels))
+            
+            # Save batch features to avoid memory overload
+            batch_features_df = pd.DataFrame(X_features)
+            batch_features_df['label'] = labels
+            batch_features_df['participant_id'] = participant_ids
 
-if __name__ == '__main__':
-    main()
 
 
 
