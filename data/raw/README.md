@@ -48,21 +48,3 @@ PreOL: Pre Open Loop condition data.
 
 S02_C_OLoop.mat:
 
-Subject 02.
-
-C may indicate a particular session or experimental run.
-
-OLoop: Open Loop trial.
-
-S20_F_CL_Sil_50_100.mat:
-
-Subject 20.
-
-F may represent a different trial or experimental variation.
-
-CL: Closed Loop.
-
-Sil_50_100: Indicates different levels of auditory feedback or conditions (e.g., silence vs. feedback levels).
-
-
-
