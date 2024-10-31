@@ -4,14 +4,9 @@ import os
 import numpy as np
 import pandas as pd
 import mne
-from mne.preprocessing import ICA
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.feature_selection import SelectKBest, mutual_info_classif
-from joblib import Parallel, delayed
 from tqdm import tqdm
 import h5py
 import warnings
@@ -261,7 +256,8 @@ def main():
         idx = 0  # Dataset index
         for signals_file, metadata_file in tqdm(file_pairs, desc='Processing and Saving Features'):
             epochs, labels = extract_features_from_file(signals_file, metadata_file)
-            if epochs is None:
+            if epochs is None or len(epochs) == 0:
+                print(f"No valid epochs for {signals_file}. Skipping.")
                 continue
             
             # Transform features
@@ -271,21 +267,47 @@ def main():
                 print(f"Error during feature transformation for {signals_file}: {e}")
                 continue
             
+            if X_features.size == 0:
+                print(f"Transformed features are empty for {signals_file}. Skipping.")
+                continue
+            
+            # Check if there are at least two unique labels
+            unique_labels = np.unique(labels)
+            if unique_labels.size < 2:
+                print(f"Not enough unique classes in labels for {signals_file}. Skipping.")
+                continue
+            
             # Feature Selection (Select Top K Features)
-            selector = SelectKBest(score_func=mutual_info_classif, k=50)  # Adjust k as needed
-            X_selected = selector.fit_transform(X_features, labels)
+            try:
+                selector = SelectKBest(score_func=mutual_info_classif, k=50)  # Adjust k as needed
+                X_selected = selector.fit_transform(X_features, labels)
+            except ValueError as e:
+                print(f"Error during feature selection for {signals_file}: {e}")
+                continue
+            
+            if X_selected.size == 0:
+                print(f"Selected features are empty for {signals_file}. Skipping.")
+                continue
             
             # Standardize Features
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X_selected)
+            try:
+                scaler = StandardScaler()
+                X_scaled = scaler.fit_transform(X_selected)
+            except ValueError as e:
+                print(f"Error during feature scaling for {signals_file}: {e}")
+                continue
             
             # Save to HDF5
-            dataset_name = f"subject_{idx}"
-            feature_grp.create_dataset(dataset_name, data=X_scaled, compression="gzip")
-            label_grp.create_dataset(dataset_name, data=labels, compression="gzip")
-            participant_id = signals_file.split('_')[0]  # Assuming 'S01' from 'S01_B_RWEO_PreOL_signals.csv'
-            participant_grp.create_dataset(dataset_name, data=np.string_(participant_id), compression="gzip")
-            idx += 1
+            try:
+                dataset_name = f"subject_{idx}"
+                feature_grp.create_dataset(dataset_name, data=X_scaled, compression="gzip")
+                label_grp.create_dataset(dataset_name, data=labels, compression="gzip")
+                participant_id = signals_file.split('_')[0]  # Assuming 'S01' from 'S01_B_RWEO_PreOL_signals.csv'
+                participant_grp.create_dataset(dataset_name, data=np.string_(participant_id), compression="gzip")
+                idx += 1
+            except Exception as e:
+                print(f"Error saving data for {signals_file}: {e}")
+                continue
     
     print("Feature extraction and saving completed.")
 
