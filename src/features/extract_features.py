@@ -67,7 +67,20 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
     def fit(self, X, y):
         for band_name, (fmin, fmax) in self.frequency_bands.items():
             print(f"Fitting CSP for {band_name} band: {fmin}-{fmax} Hz")
-            # Filter data for the current band (retain float32)
+            
+            # Verify data type and shape
+            print(f"Data dtype: {X.dtype}, Data shape: {X.shape}, Is real: {np.isrealobj(X)}")
+            
+            # Ensure data is float64
+            if X.dtype != np.float64:
+                print(f"Converting data from {X.dtype} to float64.")
+                X = X.astype(np.float64)
+            
+            # Check for NaNs or Infs
+            if not np.isfinite(X).all():
+                raise ValueError("Data contains NaNs or Infs.")
+            
+            # Filter data for the current band
             X_filtered = mne.filter.filter_data(X, self.sfreq, l_freq=fmin, h_freq=fmax, verbose=False)
             
             # Initialize and fit CSP
@@ -83,7 +96,11 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
         features = []
         for band_name, csp in self.csp_pipelines.items():
             fmin, fmax = self.filter_params[band_name]
-            # Filter data for the current band (retain float32)
+            # Ensure data is float64
+            if X.dtype != np.float64:
+                print(f"Converting data from {X.dtype} to float64 for transform.")
+                X = X.astype(np.float64)
+            # Filter data for the current band
             X_filtered = mne.filter.filter_data(X, self.sfreq, l_freq=fmin, h_freq=fmax, verbose=False)
             # Apply CSP
             csp_features = csp.transform(X_filtered)
@@ -208,7 +225,7 @@ def main():
     y_all = np.array(y_all)
     
     # Subsample for FBCSP fitting if necessary
-    MAX_EPOCHS_FOR_FBCSP = 10000  # Adjust as needed
+    MAX_EPOCHS_FOR_FBCSP = 5000  # Further reduced
     total_epochs = X_all.shape[0]
     if total_epochs > MAX_EPOCHS_FOR_FBCSP:
         print(f"Subsampling {MAX_EPOCHS_FOR_FBCSP} epochs out of {total_epochs} for FBCSP fitting.")
@@ -222,7 +239,11 @@ def main():
     
     # Fit FBCSP on the sampled data
     print("Fitting FBCSP on sampled data...")
-    fbcsp.fit(X_sample, y_sample)
+    try:
+        fbcsp.fit(X_sample, y_sample)
+    except ValueError as e:
+        print(f"Error during FBCSP fitting: {e}")
+        return
     
     # Clear memory
     del X_all
@@ -244,7 +265,11 @@ def main():
                 continue
             
             # Transform features
-            X_features = fbcsp.transform(epochs)  # Shape: (n_epochs, n_features)
+            try:
+                X_features = fbcsp.transform(epochs)  # Shape: (n_epochs, n_features)
+            except ValueError as e:
+                print(f"Error during feature transformation for {signals_file}: {e}")
+                continue
             
             # Feature Selection (Select Top K Features)
             selector = SelectKBest(score_func=mutual_info_classif, k=50)  # Adjust k as needed
@@ -266,5 +291,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
