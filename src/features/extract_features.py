@@ -10,6 +10,7 @@ from sklearn.feature_selection import SelectKBest, mutual_info_classif
 from tqdm import tqdm
 import h5py
 import warnings
+import traceback
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -76,11 +77,19 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
                 raise ValueError("Data contains NaNs or Infs.")
             
             # Filter data for the current band
-            X_filtered = mne.filter.filter_data(X, self.sfreq, l_freq=fmin, h_freq=fmax, verbose=False)
+            try:
+                X_filtered = mne.filter.filter_data(X, self.sfreq, l_freq=fmin, h_freq=fmax, verbose=False)
+            except Exception as e:
+                print(f"Filtering failed for band {band_name}: {e}")
+                raise
             
             # Initialize and fit CSP
-            csp = mne.decoding.CSP(n_components=self.n_components, reg=None, log=True, norm_trace=False)
-            csp.fit(X_filtered, y)
+            try:
+                csp = mne.decoding.CSP(n_components=self.n_components, reg=None, log=True, norm_trace=False)
+                csp.fit(X_filtered, y)
+            except Exception as e:
+                print(f"CSP fitting failed for band {band_name}: {e}")
+                raise
             
             # Store CSP pipeline
             self.csp_pipelines[band_name] = csp
@@ -96,12 +105,23 @@ class FBCSPExtractor(BaseEstimator, TransformerMixin):
                 print(f"Converting data from {X.dtype} to float64 for transform.")
                 X = X.astype(np.float64)
             # Filter data for the current band
-            X_filtered = mne.filter.filter_data(X, self.sfreq, l_freq=fmin, h_freq=fmax, verbose=False)
+            try:
+                X_filtered = mne.filter.filter_data(X, self.sfreq, l_freq=fmin, h_freq=fmax, verbose=False)
+            except Exception as e:
+                print(f"Filtering failed during transform for band {band_name}: {e}")
+                raise
             # Apply CSP
-            csp_features = csp.transform(X_filtered)
+            try:
+                csp_features = csp.transform(X_filtered)
+            except Exception as e:
+                print(f"CSP transformation failed for band {band_name}: {e}")
+                raise
             features.append(csp_features)
         # Concatenate features from all bands
-        return np.hstack(features)
+        if features:
+            return np.hstack(features)
+        else:
+            return np.array([])
 
 # Feature Extraction Function
 def extract_features_from_file(signals_file, metadata_file):
@@ -123,6 +143,7 @@ def extract_features_from_file(signals_file, metadata_file):
         return epochs, labels
     except Exception as e:
         print(f"Error processing {signals_file} and {metadata_file}: {e}")
+        traceback.print_exc()
         return None, None
 
 # Epoch Extraction Function
@@ -170,20 +191,25 @@ def extract_epochs(signals_df, metadata_df, sfreq=SFREQ, tmin=0, tmax=2):
 def main():
     print("Starting feature extraction...")
     
-    # Initialize FBCSP Extractor
+    # Initialize FBCSP Extractor with a small subset for fitting
     fbcsp = FBCSPExtractor(frequency_bands=FREQUENCY_BANDS, n_components=N_COMPONENTS, sfreq=SFREQ)
     
     # Prepare HDF5 file for storing features
-    with h5py.File(FEATURES_HDF5_PATH, 'w') as h5f:
+    try:
+        h5f = h5py.File(FEATURES_HDF5_PATH, 'w')
         h5f.create_group('features')
         h5f.create_group('labels')
         h5f.create_group('participant_ids')
+    except Exception as e:
+        print(f"Failed to create HDF5 file: {e}")
+        return
     
     # Get list of processed files
     processed_files = [f for f in os.listdir(PROCESSED_DATA_DIR) if f.endswith('_signals.csv')]
     
     if not processed_files:
         print("No processed signal files found.")
+        h5f.close()
         return
     
     # Pair signals and metadata files
@@ -198,117 +224,137 @@ def main():
     
     if not file_pairs:
         print("No valid file pairs found.")
+        h5f.close()
         return
     
     # Initialize lists for fitting FBCSP
     X_all = []
     y_all = []
     
-    # First Pass: Collect Data for FBCSP Fitting
-    print("Collecting data for FBCSP fitting...")
-    for signals_file, metadata_file in tqdm(file_pairs, desc='Collecting FBCSP Data'):
+    # First Pass: Collect a Small Subset for FBCSP Fitting
+    print("Collecting a subset of data for FBCSP fitting...")
+    subset_size = 500  # Number of epochs to collect
+    collected = 0
+    for signals_file, metadata_file in tqdm(file_pairs, desc='Collecting Subset Data', total=len(file_pairs)):
         epochs, labels = extract_features_from_file(signals_file, metadata_file)
-        if epochs is not None:
+        if epochs is not None and len(epochs) > 0:
             X_all.append(epochs)
             y_all.extend(labels)
+            collected += len(epochs)
+            if collected >= subset_size:
+                break
     
     if not X_all:
-        print("No epochs extracted from any files.")
+        print("No epochs extracted from any files for FBCSP fitting.")
+        h5f.close()
         return
     
-    X_all = np.concatenate(X_all, axis=0)  # Shape: (total_epochs, n_channels, n_times)
+    X_all = np.concatenate(X_all, axis=0)  # Shape: (subset_epochs, n_channels, n_times)
     y_all = np.array(y_all)
     
-    # Subsample for FBCSP fitting if necessary
-    MAX_EPOCHS_FOR_FBCSP = 5000  # Further reduced
-    total_epochs = X_all.shape[0]
-    if total_epochs > MAX_EPOCHS_FOR_FBCSP:
-        print(f"Subsampling {MAX_EPOCHS_FOR_FBCSP} epochs out of {total_epochs} for FBCSP fitting.")
-        np.random.seed(42)  # For reproducibility
-        indices = np.random.choice(total_epochs, size=MAX_EPOCHS_FOR_FBCSP, replace=False)
-        X_sample = X_all[indices]
-        y_sample = y_all[indices]
-    else:
-        X_sample = X_all
-        y_sample = y_all
+    # If collected more than subset_size, truncate
+    if X_all.shape[0] > subset_size:
+        X_all = X_all[:subset_size]
+        y_all = y_all[:subset_size]
     
-    # Fit FBCSP on the sampled data
-    print("Fitting FBCSP on sampled data...")
+    # Fit FBCSP on the subset data
+    print("Fitting FBCSP on subset data...")
     try:
-        fbcsp.fit(X_sample, y_sample)
+        fbcsp.fit(X_all, y_all)
     except ValueError as e:
         print(f"Error during FBCSP fitting: {e}")
+        traceback.print_exc()
+        h5f.close()
+        return
+    except Exception as e:
+        print(f"Unexpected error during FBCSP fitting: {e}")
+        traceback.print_exc()
+        h5f.close()
         return
     
     # Clear memory
     del X_all
     del y_all
-    del X_sample
-    del y_sample
     
     # Second Pass: Extract Features and Save to HDF5
     print("Extracting features and saving to HDF5...")
-    with h5py.File(FEATURES_HDF5_PATH, 'a') as h5f:
-        feature_grp = h5f['features']
-        label_grp = h5f['labels']
-        participant_grp = h5f['participant_ids']
-        
-        idx = 0  # Dataset index
-        for signals_file, metadata_file in tqdm(file_pairs, desc='Processing and Saving Features'):
-            epochs, labels = extract_features_from_file(signals_file, metadata_file)
-            if epochs is None or len(epochs) == 0:
-                print(f"No valid epochs for {signals_file}. Skipping.")
-                continue
-            
-            # Transform features
-            try:
-                X_features = fbcsp.transform(epochs)  # Shape: (n_epochs, n_features)
-            except ValueError as e:
-                print(f"Error during feature transformation for {signals_file}: {e}")
-                continue
-            
-            if X_features.size == 0:
-                print(f"Transformed features are empty for {signals_file}. Skipping.")
-                continue
-            
-            # Check if there are at least two unique labels
-            unique_labels = np.unique(labels)
-            if unique_labels.size < 2:
-                print(f"Not enough unique classes in labels for {signals_file}. Skipping.")
-                continue
-            
-            # Feature Selection (Select Top K Features)
-            try:
-                selector = SelectKBest(score_func=mutual_info_classif, k=50)  # Adjust k as needed
-                X_selected = selector.fit_transform(X_features, labels)
-            except ValueError as e:
-                print(f"Error during feature selection for {signals_file}: {e}")
-                continue
-            
-            if X_selected.size == 0:
-                print(f"Selected features are empty for {signals_file}. Skipping.")
-                continue
-            
-            # Standardize Features
-            try:
-                scaler = StandardScaler()
-                X_scaled = scaler.fit_transform(X_selected)
-            except ValueError as e:
-                print(f"Error during feature scaling for {signals_file}: {e}")
-                continue
-            
-            # Save to HDF5
-            try:
-                dataset_name = f"subject_{idx}"
-                feature_grp.create_dataset(dataset_name, data=X_scaled, compression="gzip")
-                label_grp.create_dataset(dataset_name, data=labels, compression="gzip")
-                participant_id = signals_file.split('_')[0]  # Assuming 'S01' from 'S01_B_RWEO_PreOL_signals.csv'
-                participant_grp.create_dataset(dataset_name, data=np.string_(participant_id), compression="gzip")
-                idx += 1
-            except Exception as e:
-                print(f"Error saving data for {signals_file}: {e}")
-                continue
+    feature_grp = h5f['features']
+    label_grp = h5f['labels']
+    participant_grp = h5f['participant_ids']
     
+    idx = 0  # Dataset index
+    for signals_file, metadata_file in tqdm(file_pairs, desc='Processing and Saving Features', total=len(file_pairs)):
+        epochs, labels = extract_features_from_file(signals_file, metadata_file)
+        if epochs is None or len(epochs) == 0:
+            print(f"No valid epochs for {signals_file}. Skipping.")
+            continue
+        
+        # Transform features
+        try:
+            X_features = fbcsp.transform(epochs)  # Shape: (n_epochs, n_features)
+        except ValueError as e:
+            print(f"Error during feature transformation for {signals_file}: {e}")
+            traceback.print_exc()
+            continue
+        except Exception as e:
+            print(f"Unexpected error during feature transformation for {signals_file}: {e}")
+            traceback.print_exc()
+            continue
+        
+        if X_features.size == 0:
+            print(f"Transformed features are empty for {signals_file}. Skipping.")
+            continue
+        
+        # Check if there are at least two unique labels
+        unique_labels = np.unique(labels)
+        if unique_labels.size < 2:
+            print(f"Not enough unique classes in labels for {signals_file}. Skipping.")
+            continue
+        
+        # Feature Selection (Select Top K Features)
+        try:
+            selector = SelectKBest(score_func=mutual_info_classif, k=50)  # Adjust k as needed
+            X_selected = selector.fit_transform(X_features, labels)
+        except ValueError as e:
+            print(f"Error during feature selection for {signals_file}: {e}")
+            traceback.print_exc()
+            continue
+        except Exception as e:
+            print(f"Unexpected error during feature selection for {signals_file}: {e}")
+            traceback.print_exc()
+            continue
+        
+        if X_selected.size == 0:
+            print(f"Selected features are empty for {signals_file}. Skipping.")
+            continue
+        
+        # Standardize Features
+        try:
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X_selected)
+        except ValueError as e:
+            print(f"Error during feature scaling for {signals_file}: {e}")
+            traceback.print_exc()
+            continue
+        except Exception as e:
+            print(f"Unexpected error during feature scaling for {signals_file}: {e}")
+            traceback.print_exc()
+            continue
+        
+        # Save to HDF5
+        try:
+            dataset_name = f"subject_{idx}"
+            feature_grp.create_dataset(dataset_name, data=X_scaled, compression="gzip")
+            label_grp.create_dataset(dataset_name, data=labels, compression="gzip")
+            participant_id = signals_file.split('_')[0]  # Assuming 'S01' from 'S01_B_RWEO_PreOL_signals.csv'
+            participant_grp.create_dataset(dataset_name, data=np.string_(participant_id), compression="gzip")
+            idx += 1
+        except Exception as e:
+            print(f"Error saving data for {signals_file}: {e}")
+            traceback.print_exc()
+            continue
+    
+    h5f.close()
     print("Feature extraction and saving completed.")
 
 if __name__ == "__main__":
